@@ -23,6 +23,8 @@ over MQTT; a logger process subscribes and writes them into SQLite.
   compare it against.
 - **`schema.sql`** — SQLite schema (`readings`, `forecast_periods`, `aqhi`,
   `deployments` tables).
+- **`timeutils.py`** — the shared `utc_now_iso()` timestamp helper every
+  publisher and the logger use, so they agree on one string form.
 - **`sync.sh`** — rsyncs the project to the Pi (see Deploying below).
 
 Readings are deduplicated on `(device_id, metric, recorded_at)` via a
@@ -121,6 +123,23 @@ It polls once immediately on startup, then hourly on the clock (with a
 5-minute delay past the hour, since MSC's bulletins land a minute or two
 after). `fake_publisher.py` and `ec_publisher.py` can run at the same
 time — they're different device IDs and don't conflict.
+
+## Tests
+
+`tests/` covers the message-handling and parsing logic that's easy to get
+subtly wrong: `logger.py`'s payload validation and dedup behaviour per
+message kind, `ec_publisher.py`'s citypage XML parsing and AQHI timestamp
+normalization, and `timeutils.py`. It's stdlib `unittest`, no extra
+dependency beyond what Setup already installs. Run everything from the
+project root:
+
+```bash
+python -m unittest discover -s tests
+```
+
+`tests/` is dev-only — no MQTT broker or network access needed to run it
+— and is deliberately excluded from `sync.sh` so it never gets pushed to
+the Pi.
 
 ## Deploying
 
