@@ -71,10 +71,6 @@ HREF_RE = re.compile(r'href="([^"?][^"]*)"')
 # --------------------------------------------------------------------
 
 
-def utc_now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def http_get(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -200,6 +196,24 @@ def parse_citypage(xml_bytes):
     return reading, forecast
 
 
+def _normalize_iso(value):
+    """Parse an ISO-8601 timestamp (with optional offset/fractional seconds)
+    and return it in the strict %Y-%m-%dT%H:%M:%SZ form logger.py requires,
+    or None if it's missing or unparseable."""
+    if not value:
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 # ---------------- AQHI (observation + period forecast) ----------------
 
 
@@ -223,9 +237,10 @@ def fetch_aqhi():
     obs_data = _fetch_latest_aqhi("observation")
     if obs_data:
         props = obs_data.get("properties", {})
-        if props.get("aqhi") is not None and props.get("observation_datetime"):
+        valid_at = _normalize_iso(props.get("observation_datetime"))
+        if props.get("aqhi") is not None and valid_at:
             observation = {
-                "valid_at": props["observation_datetime"],
+                "valid_at": valid_at,
                 "value": props["aqhi"],
             }
 
@@ -236,7 +251,7 @@ def fetch_aqhi():
             props = feature.get("properties", {})
             if props.get("aqhi_type") != "AQHI-Forecast-Period":
                 continue
-            issued_at = props.get("publication_datetime")
+            issued_at = _normalize_iso(props.get("publication_datetime"))
             periods = [
                 {"name": period.get("forecast_period_en"), "value": period.get("aqhi")}
                 for period in props.get("forecast_period", {}).values()
@@ -292,6 +307,8 @@ class ECPublisher:
         if forecast:
             self.client.publish(TOPIC_FORECAST, json.dumps(forecast), qos=1, retain=False)
             print(f"  {TOPIC_FORECAST}  issued {forecast['issued_at']}, {len(forecast['periods'])} period(s)")
+        else:
+            print("  [skip] no forecast in this bulletin")
 
         observation, aqhi_forecast = fetch_aqhi()
         aqhi_payload = {}

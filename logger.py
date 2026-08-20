@@ -22,6 +22,8 @@ from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
+from timeutils import utc_now_iso
+
 # --------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------
@@ -44,10 +46,6 @@ AQHI_TOPIC = "sensors/+/aqhi"
 NON_METRIC_KEYS = {"ts"}
 
 # --------------------------------------------------------------------
-
-
-def utc_now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def is_valid_recorded_at(value):
@@ -131,15 +129,44 @@ class Logger:
 
     # ---------------- Storage ----------------
 
-    def _handle_reading(self, device_id, raw_payload):
+    def _parse_payload(self, device_id, raw_payload, kind):
+        """Parse raw_payload as JSON and check it's an object. Returns the
+        dict, or None (having already logged why) if it isn't usable."""
         try:
             payload = json.loads(raw_payload)
         except json.JSONDecodeError:
-            print(f"  [bad json] {device_id}: {raw_payload[:80]!r}")
-            return
+            print(f"  [bad json] {device_id} {kind}: {raw_payload[:80]!r}")
+            return None
 
         if not isinstance(payload, dict):
-            print(f"  [bad payload] {device_id}: expected an object")
+            print(f"  [bad payload] {device_id} {kind}: expected an object")
+            return None
+
+        return payload
+
+    def _insert_rows(self, table, columns, rows):
+        """INSERT OR IGNORE rows into table, logging and swallowing any
+        sqlite3.Error so one bad batch doesn't take down the callback.
+        Returns the number of rows actually inserted, or None on db error."""
+        placeholders = ", ".join("?" * len(columns))
+        try:
+            with self.conn:
+                # OR IGNORE: a QoS-1 redelivery of a message we've already
+                # stored collides with the table's unique index and is
+                # silently dropped instead of duplicating the row.
+                cursor = self.conn.executemany(
+                    f"""INSERT OR IGNORE INTO {table} ({', '.join(columns)})
+                        VALUES ({placeholders})""",
+                    rows,
+                )
+        except sqlite3.Error as exc:
+            print(f"  [db error] {exc}")
+            return None
+        return cursor.rowcount
+
+    def _handle_reading(self, device_id, raw_payload):
+        payload = self._parse_payload(device_id, raw_payload, "reading")
+        if payload is None:
             return
 
         # Sensor-side timestamp if present and well-formed, otherwise fall
@@ -166,24 +193,14 @@ class Logger:
         if not rows:
             return
 
-        try:
-            with self.conn:
-                # OR IGNORE: a QoS-1 redelivery of a reading we've already
-                # stored collides with the unique index on
-                # (device_id, metric, recorded_at) and is silently dropped
-                # instead of duplicating the row.
-                cursor = self.conn.executemany(
-                    """INSERT OR IGNORE INTO readings
-                       (device_id, metric, value, recorded_at, received_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    rows,
-                )
-        except sqlite3.Error as exc:
-            # Don't crash on a write failure — log it and keep consuming.
-            print(f"  [db error] {exc}")
+        inserted = self._insert_rows(
+            "readings",
+            ("device_id", "metric", "value", "recorded_at", "received_at"),
+            rows,
+        )
+        if inserted is None:
             return
 
-        inserted = cursor.rowcount
         duplicates = len(rows) - inserted
         if duplicates:
             print(f"  [dedup] {device_id}: skipped {duplicates} duplicate reading(s)")
@@ -193,10 +210,8 @@ class Logger:
         print(f"  {device_id}: {metrics}  (total {self.rows_written})")
 
     def _handle_forecast(self, device_id, raw_payload):
-        try:
-            payload = json.loads(raw_payload)
-        except json.JSONDecodeError:
-            print(f"  [bad json] {device_id} forecast: {raw_payload[:80]!r}")
+        payload = self._parse_payload(device_id, raw_payload, "forecast")
+        if payload is None:
             return
 
         issued_at = payload.get("issued_at")
@@ -226,29 +241,23 @@ class Logger:
         if not rows:
             return
 
-        try:
-            with self.conn:
-                cursor = self.conn.executemany(
-                    """INSERT OR IGNORE INTO forecast_periods
-                       (device_id, issued_at, period_name, period_index,
-                        temp_class, temperature, pop, summary, received_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    rows,
-                )
-        except sqlite3.Error as exc:
-            print(f"  [db error] {exc}")
+        inserted = self._insert_rows(
+            "forecast_periods",
+            ("device_id", "issued_at", "period_name", "period_index",
+             "temp_class", "temperature", "pop", "summary", "received_at"),
+            rows,
+        )
+        if inserted is None:
             return
 
-        inserted = cursor.rowcount
         print(f"  {device_id}: forecast issued {issued_at}, {inserted}/{len(rows)} period(s) stored")
 
     def _handle_aqhi(self, device_id, raw_payload):
-        try:
-            payload = json.loads(raw_payload)
-        except json.JSONDecodeError:
-            print(f"  [bad json] {device_id} aqhi: {raw_payload[:80]!r}")
+        payload = self._parse_payload(device_id, raw_payload, "aqhi")
+        if payload is None:
             return
 
+        received_at = utc_now_iso()
         rows = []
 
         observation = payload.get("observation")
@@ -256,7 +265,7 @@ class Logger:
             value = observation.get("value")
             valid_at = observation.get("valid_at")
             if is_valid_recorded_at(valid_at) and isinstance(value, (int, float)) and not isinstance(value, bool):
-                rows.append((device_id, "observation", valid_at, "", float(value)))
+                rows.append((device_id, "observation", valid_at, "", float(value), received_at))
 
         forecast = payload.get("forecast")
         if isinstance(forecast, dict):
@@ -266,27 +275,19 @@ class Logger:
                     name = period.get("name") if isinstance(period, dict) else None
                     value = period.get("value") if isinstance(period, dict) else None
                     if name and isinstance(value, (int, float)) and not isinstance(value, bool):
-                        rows.append((device_id, "forecast", issued_at, name, float(value)))
+                        rows.append((device_id, "forecast", issued_at, name, float(value), received_at))
 
         if not rows:
             return
 
-        received_at = utc_now_iso()
-        rows = [(d, k, v, p, val, received_at) for (d, k, v, p, val) in rows]
-
-        try:
-            with self.conn:
-                cursor = self.conn.executemany(
-                    """INSERT OR IGNORE INTO aqhi
-                       (device_id, kind, valid_at, period_name, value, received_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    rows,
-                )
-        except sqlite3.Error as exc:
-            print(f"  [db error] {exc}")
+        inserted = self._insert_rows(
+            "aqhi",
+            ("device_id", "kind", "valid_at", "period_name", "value", "received_at"),
+            rows,
+        )
+        if inserted is None:
             return
 
-        inserted = cursor.rowcount
         print(f"  {device_id}: aqhi {inserted}/{len(rows)} row(s) stored")
 
     # ---------------- Lifecycle ----------------

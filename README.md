@@ -23,6 +23,7 @@ over MQTT; a logger process subscribes and writes them into SQLite.
   compare it against.
 - **`schema.sql`** — SQLite schema (`readings`, `forecast_periods`, `aqhi`,
   `deployments` tables).
+- **`sync.sh`** — rsyncs the project to the Pi (see Deploying below).
 
 Readings are deduplicated on `(device_id, metric, recorded_at)` via a
 unique index, since the logger uses QoS 1 with a persistent MQTT session
@@ -120,6 +121,20 @@ It polls once immediately on startup, then hourly on the clock (with a
 5-minute delay past the hour, since MSC's bulletins land a minute or two
 after). `fake_publisher.py` and `ec_publisher.py` can run at the same
 time — they're different device IDs and don't conflict.
+
+## Deploying
+
+To push the project to the Pi, run `sync.sh`. It rsyncs the working tree
+(minus `.git` and anything gitignored) to `~/weather/` on a host named
+`pi-logger` in your SSH config:
+
+```bash
+./sync.sh
+```
+
+Restart `logger.py` on the Pi afterwards to pick up the change — the
+persistent MQTT session means it won't miss anything published while it
+was down.
 
 ## Future work
 

@@ -20,9 +20,10 @@ import random
 import signal
 import sys
 import time
-from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
+
+from timeutils import utc_now_iso
 
 # --------------------------------------------------------------------
 # Config
@@ -58,12 +59,6 @@ TOPIC_READING = "sensors/{device_id}/reading"
 TOPIC_STATUS = "sensors/{device_id}/status"
 
 # --------------------------------------------------------------------
-
-
-def utc_now_iso():
-    """Timestamp in ISO 8601 with a Z suffix. Generated here, at the
-    'sensor', not at the logger — so a queued message stays accurate."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class FakeDevice:
