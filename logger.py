@@ -37,6 +37,8 @@ CLIENT_ID = "logger-main"
 
 READING_TOPIC = "sensors/+/reading"
 STATUS_TOPIC = "sensors/+/status"
+FORECAST_TOPIC = "sensors/+/forecast"
+AQHI_TOPIC = "sensors/+/aqhi"
 
 # Keys in the payload that aren't measurements.
 NON_METRIC_KEYS = {"ts"}
@@ -95,7 +97,12 @@ class Logger:
         print(f"Connected to {BROKER_HOST} ({resumed})")
 
         # Subscribe at QoS 1. Must re-subscribe on every connect.
-        client.subscribe([(READING_TOPIC, 1), (STATUS_TOPIC, 1)])
+        client.subscribe([
+            (READING_TOPIC, 1),
+            (STATUS_TOPIC, 1),
+            (FORECAST_TOPIC, 1),
+            (AQHI_TOPIC, 1),
+        ])
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties):
         if reason_code != 0:
@@ -117,6 +124,10 @@ class Logger:
 
         if kind == "reading":
             self._handle_reading(device_id, msg.payload)
+        elif kind == "forecast":
+            self._handle_forecast(device_id, msg.payload)
+        elif kind == "aqhi":
+            self._handle_aqhi(device_id, msg.payload)
 
     # ---------------- Storage ----------------
 
@@ -180,6 +191,103 @@ class Logger:
         self.rows_written += inserted
         metrics = ", ".join(f"{r[1]}={r[2]}" for r in rows)
         print(f"  {device_id}: {metrics}  (total {self.rows_written})")
+
+    def _handle_forecast(self, device_id, raw_payload):
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            print(f"  [bad json] {device_id} forecast: {raw_payload[:80]!r}")
+            return
+
+        issued_at = payload.get("issued_at")
+        periods = payload.get("periods")
+        if not is_valid_recorded_at(issued_at) or not isinstance(periods, list):
+            print(f"  [bad forecast] {device_id}: missing/invalid issued_at or periods")
+            return
+
+        received_at = utc_now_iso()
+        rows = []
+        for period in periods:
+            name = period.get("name") if isinstance(period, dict) else None
+            if not name:
+                continue
+            rows.append((
+                device_id,
+                issued_at,
+                name,
+                period.get("index"),
+                period.get("temp_class"),
+                period.get("temperature"),
+                period.get("pop"),
+                period.get("summary"),
+                received_at,
+            ))
+
+        if not rows:
+            return
+
+        try:
+            with self.conn:
+                cursor = self.conn.executemany(
+                    """INSERT OR IGNORE INTO forecast_periods
+                       (device_id, issued_at, period_name, period_index,
+                        temp_class, temperature, pop, summary, received_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    rows,
+                )
+        except sqlite3.Error as exc:
+            print(f"  [db error] {exc}")
+            return
+
+        inserted = cursor.rowcount
+        print(f"  {device_id}: forecast issued {issued_at}, {inserted}/{len(rows)} period(s) stored")
+
+    def _handle_aqhi(self, device_id, raw_payload):
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            print(f"  [bad json] {device_id} aqhi: {raw_payload[:80]!r}")
+            return
+
+        rows = []
+
+        observation = payload.get("observation")
+        if isinstance(observation, dict):
+            value = observation.get("value")
+            valid_at = observation.get("valid_at")
+            if is_valid_recorded_at(valid_at) and isinstance(value, (int, float)) and not isinstance(value, bool):
+                rows.append((device_id, "observation", valid_at, "", float(value)))
+
+        forecast = payload.get("forecast")
+        if isinstance(forecast, dict):
+            issued_at = forecast.get("issued_at")
+            if is_valid_recorded_at(issued_at):
+                for period in forecast.get("periods", []):
+                    name = period.get("name") if isinstance(period, dict) else None
+                    value = period.get("value") if isinstance(period, dict) else None
+                    if name and isinstance(value, (int, float)) and not isinstance(value, bool):
+                        rows.append((device_id, "forecast", issued_at, name, float(value)))
+
+        if not rows:
+            return
+
+        received_at = utc_now_iso()
+        rows = [(d, k, v, p, val, received_at) for (d, k, v, p, val) in rows]
+
+        try:
+            with self.conn:
+                cursor = self.conn.executemany(
+                    """INSERT OR IGNORE INTO aqhi
+                       (device_id, kind, valid_at, period_name, value, received_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    rows,
+                )
+        except sqlite3.Error as exc:
+            print(f"  [db error] {exc}")
+            return
+
+        inserted = cursor.rowcount
+        print(f"  {device_id}: aqhi {inserted}/{len(rows)} row(s) stored")
 
     # ---------------- Lifecycle ----------------
 

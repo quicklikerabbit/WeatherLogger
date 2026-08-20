@@ -1,26 +1,12 @@
-CREATE TABLE readings (
-    id          INTEGER PRIMARY KEY,
-    device_id   TEXT    NOT NULL,
-    metric      TEXT    NOT NULL,
-    value       REAL    NOT NULL,
-    recorded_at TEXT    NOT NULL,
-    received_at TEXT    NOT NULL DEFAULT (datetime('now'))
-);
-
--- UNIQUE so a QoS-1 redelivery of the same reading (same device/metric/
--- timestamp) can be safely re-inserted with INSERT OR IGNORE instead of
--- creating a duplicate row.
-CREATE UNIQUE INDEX idx_readings_lookup ON readings (device_id, metric, recorded_at);
-CREATE INDEX idx_readings_time   ON readings (recorded_at);
-
-CREATE TABLE deployments (
-    id         INTEGER PRIMARY KEY,
-    device_id  TEXT NOT NULL,
-    location   TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    ended_at   TEXT,
-    notes      TEXT
-);
+-- Adds forecast_periods and aqhi to an existing database that already has
+-- readings and deployments (i.e. one created before these tables existed).
+-- Safe to run once against a live database; does not touch existing tables
+-- or data. schema.sql already includes these — this file exists only for
+-- migrating a database that predates them.
+--
+-- Run it against the live db, e.g.:
+--   sqlite3 ~/weather/sensors.db < migrations/0001_forecast_and_aqhi.sql          (on the Pi)
+--   ssh pi-logger 'sqlite3 ~/weather/sensors.db' < migrations/0001_forecast_and_aqhi.sql   (from elsewhere)
 
 -- Multi-day weather forecast periods (e.g. "Tonight", "Monday"), issued as
 -- a batch. Doesn't fit `readings` because a period isn't one scalar value:
