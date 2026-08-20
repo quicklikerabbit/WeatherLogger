@@ -141,6 +141,18 @@ python -m unittest discover -s tests
 — and is deliberately excluded from `sync.sh` so it never gets pushed to
 the Pi.
 
+For end-to-end confidence beyond the unit tests, `tests/integration_check.py`
+spins up a real (ephemeral, localhost-only) mosquitto broker and runs the
+actual `fake_publisher.py` and `logger.py` code against it over real MQTT,
+then checks the readings landed in a scratch database. It needs a
+`mosquitto` binary on the machine (`brew install mosquitto` /
+`apt install mosquitto`) and isn't picked up by `unittest discover`, so run
+it by hand:
+
+```bash
+python tests/integration_check.py
+```
+
 ## Deploying
 
 To push the project to the Pi, run `sync.sh`. It rsyncs the working tree
