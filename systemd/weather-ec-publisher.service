@@ -1,0 +1,16 @@
+[Unit]
+Description=Environment Canada weather data publisher
+After=network-online.target mosquitto.service weather-logger.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi-logger
+WorkingDirectory=/home/pi-logger/weather
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi-logger/weather/venv/bin/python /home/pi-logger/weather/ec_publisher.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -151,9 +151,38 @@ To push the project to the Pi, run `sync.sh`. It rsyncs the working tree
 ./sync.sh
 ```
 
-Restart `logger.py` on the Pi afterwards to pick up the change — the
-persistent MQTT session means it won't miss anything published while it
-was down.
+Restart `logger.py` and `ec_publisher.py` on the Pi afterwards to pick up
+the change — the persistent MQTT session means `logger.py` won't miss
+anything published while it was down. If both run as systemd services
+(see below), restart with:
+
+```bash
+ssh pi-logger 'sudo systemctl restart weather-logger weather-ec-publisher'
+```
+
+### Running on boot
+
+`systemd/` holds unit files that start `logger.py` and `ec_publisher.py`
+automatically when the Pi boots, and restart them automatically if they
+crash or the Pi loses power and comes back — no manual intervention
+needed. `weather-ec-publisher.service` orders itself after
+`weather-logger.service` so the logger comes up first, though MQTT's
+persistent sessions mean strict ordering isn't required for correctness.
+
+One-time setup on the Pi, after the first `sync.sh`:
+
+```bash
+ssh pi-logger
+sudo cp ~/weather/systemd/weather-logger.service ~/weather/systemd/weather-ec-publisher.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now weather-logger weather-ec-publisher
+```
+
+Check status/logs with `systemctl status weather-logger` or
+`journalctl -u weather-logger -f` (swap in `weather-ec-publisher` for the
+EC side). If you edit either `.service` file, re-copy it to
+`/etc/systemd/system/` and run `sudo systemctl daemon-reload` before the
+change takes effect.
 
 ## Future work
 
