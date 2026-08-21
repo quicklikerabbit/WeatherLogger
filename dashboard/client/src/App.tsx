@@ -1,6 +1,7 @@
 import { ParentSize } from '@visx/responsive'
 import { useEffect, useState } from 'react'
 import { fetchJson } from './api'
+import { deviceLocation } from './deviceInfo'
 import { LineChart, type Reading } from './LineChart'
 
 type SeriesInfo = {
@@ -48,10 +49,14 @@ function App() {
     return () => controller.abort()
   }, [selected])
 
+  const [selectedDeviceId, selectedMetric] = selected ? selected.split('::') : ['', '']
+  const selectedLocation = deviceLocation(selectedDeviceId)
+
   return (
     <main className="min-h-screen bg-white p-8 text-gray-700 dark:bg-gray-900 dark:text-gray-300">
       <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Weather Dashboard</h1>
       {snapshot && <p className="mt-1 text-sm">Snapshot: {snapshot}</p>}
+      {selectedLocation && <p className="text-sm text-gray-500 dark:text-gray-400">{selectedLocation}</p>}
       {error && <p className="mt-2 text-red-600 dark:text-red-400">{error}</p>}
 
       <label className="mt-6 flex items-center gap-2">
@@ -61,17 +66,23 @@ function App() {
           value={selected}
           onChange={(e) => setSelected(e.target.value)}
         >
-          {series.map((s) => (
-            <option key={seriesKey(s)} value={seriesKey(s)}>
-              {s.device_id} / {s.metric} ({s.count} readings)
-            </option>
-          ))}
+          {series.map((s) => {
+            const location = deviceLocation(s.device_id)
+            return (
+              <option key={seriesKey(s)} value={seriesKey(s)}>
+                {s.device_id} / {s.metric} ({s.count} readings)
+                {location ? ` — ${location}` : ''}
+              </option>
+            )
+          })}
         </select>
       </label>
 
       <div className="mt-6 h-[400px]">
         <ParentSize>
-          {({ width, height }) => <LineChart readings={readings} width={width} height={height} />}
+          {({ width, height }) => (
+            <LineChart readings={readings} width={width} height={height} metric={selectedMetric} />
+          )}
         </ParentSize>
       </div>
     </main>

@@ -11,7 +11,9 @@ function makeSnapshotWithReadings(filePath: string) {
   db.exec(`
     CREATE TABLE readings (device_id TEXT, metric TEXT, recorded_at TEXT, value REAL);
     INSERT INTO readings (device_id, metric, recorded_at, value)
-    VALUES ('dev1', 'temperature', '2024-01-01T00:00:00Z', 5.2);
+    VALUES
+      ('dev1', 'temperature', '2024-01-01T00:00:00Z', 5.2),
+      ('fake-gw3002', 'temperature', '2024-01-01T00:00:00Z', 14.0);
   `);
   db.close();
 }
@@ -61,7 +63,7 @@ describe("app routes", () => {
     expect(res.status).toBe(400);
   });
 
-  it("GET /api/series and /api/readings return the snapshot's data", async () => {
+  it("GET /api/series and /api/readings return the snapshot's data, excluding fake-* test devices", async () => {
     makeSnapshotWithReadings(path.join(tmpDir, "sensors-1.db"));
     const app = createApp(tmpDir);
 

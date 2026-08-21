@@ -31,7 +31,9 @@ export function createApp(backupsDir: string = DEFAULT_BACKUPS_DIR) {
 
   // Distinct device/metric combinations present in the snapshot, so the
   // client can populate a selector without hardcoding what a device has
-  // reported.
+  // reported. Devices prefixed "fake-" are the simulated stand-ins used
+  // before real hardware existed and are excluded — they're test data,
+  // not readings anyone dashboards over.
   app.get(
     "/api/series",
     withDbErrorHandling((_req, res) => {
@@ -42,6 +44,7 @@ export function createApp(backupsDir: string = DEFAULT_BACKUPS_DIR) {
                   MIN(recorded_at) as first_recorded_at,
                   MAX(recorded_at) as last_recorded_at
            FROM readings
+           WHERE device_id NOT LIKE 'fake%'
            GROUP BY device_id, metric
            ORDER BY device_id, metric`,
         )
