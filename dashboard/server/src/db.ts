@@ -3,30 +3,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_BACKUPS_DIR = path.resolve(
+export const DEFAULT_BACKUPS_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../backups",
 );
 
-const BACKUPS_DIR = process.env.BACKUPS_DIR
-  ? path.resolve(process.env.BACKUPS_DIR)
-  : DEFAULT_BACKUPS_DIR;
-
-let cachedPath: string | null = null;
-let cachedDb: Database.Database | null = null;
-
-function findLatestSnapshot(): string {
+function findLatestSnapshot(backupsDir: string): string {
   const entries = fs
-    .readdirSync(BACKUPS_DIR)
+    .readdirSync(backupsDir)
     .filter((name) => name.endsWith(".db"))
     .map((name) => {
-      const filePath = path.join(BACKUPS_DIR, name);
+      const filePath = path.join(backupsDir, name);
       return { filePath, mtimeMs: fs.statSync(filePath).mtimeMs };
     });
 
   if (entries.length === 0) {
     throw new Error(
-      `No .db snapshots found in ${BACKUPS_DIR}. Run backup.sh first.`,
+      `No .db snapshots found in ${backupsDir}. Run backup.sh first.`,
     );
   }
 
@@ -34,16 +27,23 @@ function findLatestSnapshot(): string {
   return entries[0].filePath;
 }
 
-// Re-checks for a newer snapshot on every call (cheap directory scan) so a
-// fresh backup.sh pull shows up without restarting the server.
-export function getDb(): { db: Database.Database; snapshotPath: string } {
-  const latest = findLatestSnapshot();
+// Returns a getDb() bound to one backups directory, with its own cache —
+// each call re-checks for a newer snapshot (cheap directory scan) so a
+// fresh backup.sh pull shows up without restarting the server, but only
+// reopens the sqlite connection when the latest snapshot actually changes.
+export function createDb(backupsDir: string) {
+  let cachedPath: string | null = null;
+  let cachedDb: Database.Database | null = null;
 
-  if (latest !== cachedPath) {
-    cachedDb?.close();
-    cachedDb = new Database(latest, { readonly: true, fileMustExist: true });
-    cachedPath = latest;
-  }
+  return function getDb(): { db: Database.Database; snapshotPath: string } {
+    const latest = findLatestSnapshot(backupsDir);
 
-  return { db: cachedDb!, snapshotPath: cachedPath! };
+    if (latest !== cachedPath) {
+      cachedDb?.close();
+      cachedDb = new Database(latest, { readonly: true, fileMustExist: true });
+      cachedPath = latest;
+    }
+
+    return { db: cachedDb!, snapshotPath: cachedPath! };
+  };
 }

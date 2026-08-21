@@ -8,6 +8,16 @@ export type Reading = { recorded_at: string; value: number }
 
 const margin = { top: 16, right: 24, bottom: 32, left: 48 }
 
+// A single-reading series gives extent() a zero-width [date, date] range,
+// which collapses the time scale. Pad it so the lone point renders
+// centered instead of the axis degenerating to a point.
+export function computeXDomain(dates: Date[]): [Date, Date] {
+  const [minDate, maxDate] = extent(dates) as [Date, Date]
+  return minDate.getTime() === maxDate.getTime()
+    ? [new Date(minDate.getTime() - 30 * 60 * 1000), new Date(maxDate.getTime() + 30 * 60 * 1000)]
+    : [minDate, maxDate]
+}
+
 export function LineChart({
   readings,
   width,
@@ -31,17 +41,8 @@ export function LineChart({
     return <p>No readings for this selection.</p>
   }
 
-  const [minDate, maxDate] = extent(parsed, (d) => d.date) as [Date, Date]
-  // A single-reading series gives extent() a zero-width [date, date] range,
-  // which collapses the time scale. Pad it so the lone point renders
-  // centered instead of the axis degenerating to a point.
-  const xDomain: [Date, Date] =
-    minDate.getTime() === maxDate.getTime()
-      ? [new Date(minDate.getTime() - 30 * 60 * 1000), new Date(maxDate.getTime() + 30 * 60 * 1000)]
-      : [minDate, maxDate]
-
   const xScale = scaleTime({
-    domain: xDomain,
+    domain: computeXDomain(parsed.map((d) => d.date)),
     range: [0, innerWidth],
   })
 
