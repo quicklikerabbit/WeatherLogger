@@ -31,8 +31,17 @@ export function LineChart({
     return <p>No readings for this selection.</p>
   }
 
+  const [minDate, maxDate] = extent(parsed, (d) => d.date) as [Date, Date]
+  // A single-reading series gives extent() a zero-width [date, date] range,
+  // which collapses the time scale. Pad it so the lone point renders
+  // centered instead of the axis degenerating to a point.
+  const xDomain: [Date, Date] =
+    minDate.getTime() === maxDate.getTime()
+      ? [new Date(minDate.getTime() - 30 * 60 * 1000), new Date(maxDate.getTime() + 30 * 60 * 1000)]
+      : [minDate, maxDate]
+
   const xScale = scaleTime({
-    domain: extent(parsed, (d) => d.date) as [Date, Date],
+    domain: xDomain,
     range: [0, innerWidth],
   })
 

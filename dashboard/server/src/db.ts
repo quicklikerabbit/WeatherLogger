@@ -16,19 +16,22 @@ let cachedPath: string | null = null;
 let cachedDb: Database.Database | null = null;
 
 function findLatestSnapshot(): string {
-  const files = fs
+  const entries = fs
     .readdirSync(BACKUPS_DIR)
     .filter((name) => name.endsWith(".db"))
-    .map((name) => path.join(BACKUPS_DIR, name));
+    .map((name) => {
+      const filePath = path.join(BACKUPS_DIR, name);
+      return { filePath, mtimeMs: fs.statSync(filePath).mtimeMs };
+    });
 
-  if (files.length === 0) {
+  if (entries.length === 0) {
     throw new Error(
       `No .db snapshots found in ${BACKUPS_DIR}. Run backup.sh first.`,
     );
   }
 
-  files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-  return files[0];
+  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return entries[0].filePath;
 }
 
 // Re-checks for a newer snapshot on every call (cheap directory scan) so a

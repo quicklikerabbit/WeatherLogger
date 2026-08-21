@@ -164,7 +164,9 @@ def main():
 
         ready = threading.Event()
         state = {}
-        logger_thread = threading.Thread(target=run_logger, args=(tmp, devices, ready, state))
+        logger_thread = threading.Thread(
+            target=run_logger, args=(tmp, devices, ready, state), daemon=True
+        )
 
         try:
             # Logger first, then publishers — matches the real deploy
@@ -195,7 +197,11 @@ def main():
                 state["client"].disconnect()
             logger_thread.join(timeout=5)
             broker_proc.terminate()
-            broker_proc.wait(timeout=5)
+            try:
+                broker_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                broker_proc.kill()
+                broker_proc.wait()
             broker_log.close()
 
         if "problems" not in state:

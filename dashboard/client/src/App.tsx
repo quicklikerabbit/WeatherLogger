@@ -14,6 +14,18 @@ function seriesKey(s: Pick<SeriesInfo, 'device_id' | 'metric'>) {
   return `${s.device_id}::${s.metric}`
 }
 
+// fetch() only rejects on network failure, not HTTP error status — without
+// this, a 503/400 body like { ok: false, error: "..." } gets treated as
+// success data and crashes downstream code expecting the real shape.
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init)
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.error ?? `Request failed: ${res.status}`)
+  }
+  return data as T
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<string | null>(null)
   const [series, setSeries] = useState<SeriesInfo[]>([])
@@ -22,9 +34,8 @@ function App() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch('/api/series')
-      .then((res) => res.json())
-      .then((data: { snapshot: string; series: SeriesInfo[] }) => {
+    fetchJson<{ snapshot: string; series: SeriesInfo[] }>('/api/series')
+      .then((data) => {
         setSnapshot(data.snapshot)
         setSeries(data.series)
         if (data.series.length > 0) {
@@ -36,12 +47,16 @@ function App() {
 
   useEffect(() => {
     if (!selected) return
+    const controller = new AbortController()
     const [device_id, metric] = selected.split('::')
     const params = new URLSearchParams({ device_id, metric })
-    fetch(`/api/readings?${params}`)
-      .then((res) => res.json())
-      .then((data: { readings: Reading[] }) => setReadings(data.readings))
-      .catch((err) => setError(String(err)))
+    fetchJson<{ readings: Reading[] }>(`/api/readings?${params}`, { signal: controller.signal })
+      .then((data) => setReadings(data.readings))
+      .catch((err) => {
+        if (err.name === 'AbortError') return
+        setError(String(err))
+      })
+    return () => controller.abort()
   }, [selected])
 
   return (
