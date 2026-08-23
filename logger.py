@@ -42,8 +42,9 @@ STATUS_TOPIC = "sensors/+/status"
 FORECAST_TOPIC = "sensors/+/forecast"
 AQHI_TOPIC = "sensors/+/aqhi"
 
-# Keys in the payload that aren't measurements.
-NON_METRIC_KEYS = {"ts"}
+# Keys in the payload that aren't numeric measurements. precip_type is
+# categorical text — handled separately, see _handle_reading.
+NON_METRIC_KEYS = {"ts", "precip_type"}
 
 # --------------------------------------------------------------------
 
@@ -190,24 +191,27 @@ class Logger:
                 continue
             rows.append((device_id, key, float(value), recorded_at, received_at))
 
-        if not rows:
-            return
+        if rows:
+            inserted = self._insert_rows(
+                "readings",
+                ("device_id", "metric", "value", "recorded_at", "received_at"),
+                rows,
+            )
+            if inserted is not None:
+                duplicates = len(rows) - inserted
+                if duplicates:
+                    print(f"  [dedup] {device_id}: skipped {duplicates} duplicate reading(s)")
+                self.rows_written += inserted
+                metrics = ", ".join(f"{r[1]}={r[2]}" for r in rows)
+                print(f"  {device_id}: {metrics}  (total {self.rows_written})")
 
-        inserted = self._insert_rows(
-            "readings",
-            ("device_id", "metric", "value", "recorded_at", "received_at"),
-            rows,
-        )
-        if inserted is None:
-            return
-
-        duplicates = len(rows) - inserted
-        if duplicates:
-            print(f"  [dedup] {device_id}: skipped {duplicates} duplicate reading(s)")
-
-        self.rows_written += inserted
-        metrics = ", ".join(f"{r[1]}={r[2]}" for r in rows)
-        print(f"  {device_id}: {metrics}  (total {self.rows_written})")
+        precip_type = payload.get("precip_type")
+        if isinstance(precip_type, str) and precip_type:
+            self._insert_rows(
+                "precip_type_readings",
+                ("device_id", "recorded_at", "precip_type", "received_at"),
+                [(device_id, recorded_at, precip_type, received_at)],
+            )
 
     def _handle_forecast(self, device_id, raw_payload):
         payload = self._parse_payload(device_id, raw_payload, "forecast")
@@ -234,6 +238,7 @@ class Logger:
                 period.get("temp_class"),
                 period.get("temperature"),
                 period.get("pop"),
+                period.get("precip_type"),
                 period.get("summary"),
                 received_at,
             ))
@@ -244,7 +249,7 @@ class Logger:
         inserted = self._insert_rows(
             "forecast_periods",
             ("device_id", "issued_at", "period_name", "period_index",
-             "temp_class", "temperature", "pop", "summary", "received_at"),
+             "temp_class", "temperature", "pop", "precip_type", "summary", "received_at"),
             rows,
         )
         if inserted is None:

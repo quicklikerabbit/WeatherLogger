@@ -64,6 +64,7 @@ CITYPAGE_PROVINCE = "BC"
 CITYPAGE_SITE = "s0000775"    # Victoria
 AQHI_REGION = "pyr"           # Pacific and Yukon Region
 AQHI_LOCATION = "JBOBQ"       # Victoria / Saanich
+SWOB_STATION = "CYYJ-MAN"     # Victoria Int'l Airport, manned/augmented obs
 
 USER_AGENT = "WeatherLogger/1.0 (personal weather station project)"
 HREF_RE = re.compile(r'href="([^"?][^"]*)"')
@@ -75,6 +76,17 @@ def http_get(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read()
+
+
+def _best_effort(label, fn):
+    """Runs fn() and returns its result, or None if it raises. Used for a
+    poll section that's allowed to be missing (network hiccup, absent
+    bulletin) without sinking the sections that already succeeded."""
+    try:
+        return fn()
+    except Exception as exc:
+        print(f"  [skip] {label}: {exc}")
+        return None
 
 
 def list_directory(url):
@@ -163,6 +175,7 @@ def parse_citypage(xml_bytes):
             temp_el = fc.find("temperatures/temperature")
             pop_el = fc.find("abbreviatedForecast/pop")
             summary_el = fc.find("textSummary")
+            precip_type_els = fc.findall("precipitation/precipType")
 
             pop = None
             if pop_el is not None and pop_el.text:
@@ -188,6 +201,10 @@ def parse_citypage(xml_bytes):
                 "temp_class": temp_el.get("class") if temp_el is not None else None,
                 "temperature": temperature,
                 "pop": pop,
+                # A period can list more than one precipType (e.g. rain
+                # changing to snow); join them rather than keep only the
+                # first and silently drop the rest.
+                "precip_type": ",".join(el.text for el in precip_type_els if el.text) or None,
                 "summary": summary_el.text if summary_el is not None else None,
             })
         if issued_at and periods:
@@ -212,6 +229,13 @@ def _normalize_iso(value):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _seconds_between(ts_a, ts_b):
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    dt_a = datetime.strptime(ts_a, fmt).replace(tzinfo=timezone.utc)
+    dt_b = datetime.strptime(ts_b, fmt).replace(tzinfo=timezone.utc)
+    return abs((dt_a - dt_b).total_seconds())
 
 
 # ---------------- AQHI (observation + period forecast) ----------------
@@ -264,6 +288,118 @@ def fetch_aqhi():
     return observation, forecast
 
 
+# ---------------- SWOB-ML (precipitation observation) ----------------
+
+# citypage's currentConditions has no precipitation field at all — this is
+# the only Datamart product that reports a measured amount for Victoria.
+# The "latest" symlink-style directory always holds the current file, so
+# unlike citypage/AQHI there's no hour/date directory to search.
+SWOB_NS = {
+    "om": "http://www.opengis.net/om/1.0",
+    "gml": "http://www.opengis.net/gml",
+    "p": "http://dms.ec.gc.ca/schema/point-observation/2.0",
+}
+
+# present_weather code -> precip_type, from the SWOB-ML User Guide's
+# std_code_src/present_weather table (manned-station codes 0-184; codes not
+# listed here — sky/visibility conditions, dust, fog, "recent" weather that
+# isn't falling right now, reserved values — aren't precipitation and map to
+# no precip_type). Some source codes bundle two phenomena (e.g. "drizzle or
+# snow grains"); the bundled ones are filed under the first-listed category.
+PRESENT_WEATHER_PRECIP_TYPE = {
+    20: "drizzle", 21: "rain", 22: "snow", 23: "mixed", 24: "freezing_rain",
+    25: "rain", 26: "snow", 27: "hail", 29: "thunderstorm",
+    50: "drizzle", 51: "drizzle", 52: "drizzle", 53: "drizzle",
+    54: "drizzle", 55: "drizzle", 56: "drizzle",
+    57: "freezing_rain", 58: "freezing_rain", 59: "freezing_rain",
+    60: "freezing_rain", 61: "freezing_rain",
+    62: "drizzle", 63: "drizzle",
+    64: "rain", 65: "rain", 66: "rain", 67: "rain", 68: "rain", 69: "rain", 70: "rain",
+    71: "freezing_rain", 72: "freezing_rain", 73: "freezing_rain",
+    74: "freezing_rain", 75: "freezing_rain",
+    76: "mixed", 77: "mixed",
+    78: "snow", 79: "snow", 80: "snow", 81: "snow", 82: "snow", 83: "snow", 84: "snow",
+    85: "ice_pellets", 86: "ice_pellets", 87: "ice_pellets", 88: "ice_pellets",
+    89: "ice_pellets", 90: "ice_pellets", 91: "snow",
+    92: "ice_pellets", 93: "ice_pellets", 94: "ice_pellets", 95: "ice_pellets", 96: "ice_pellets",
+    97: "rain", 98: "rain", 99: "rain", 100: "rain", 101: "rain",
+    102: "mixed", 103: "mixed",
+    104: "snow", 105: "snow", 106: "snow", 107: "snow", 108: "snow",
+    109: "hail", 110: "hail",
+    111: "hail", 112: "hail", 113: "hail", 114: "hail", 115: "hail",
+    116: "rain", 117: "rain", 118: "mixed", 119: "mixed",
+    120: "thunderstorm", 121: "thunderstorm", 122: "thunderstorm",
+    123: "thunderstorm", 124: "thunderstorm",
+    145: "thunderstorm", 146: "thunderstorm",
+    148: "hail", 149: "hail", 150: "hail", 151: "hail",
+    152: "ice_pellets", 153: "ice_pellets", 154: "ice_pellets", 155: "ice_pellets",
+}
+
+
+# How far apart the SWOB observation's own timestamp and citypage's reading
+# timestamp may be for the two to still be treated as the same hour's
+# observation. Both update roughly hourly; 90 minutes covers a slow bulletin
+# on either side without accepting an observation from a station that has
+# stopped updating (the "latest" file otherwise just keeps serving its last
+# value forever).
+SWOB_MAX_AGE_SECONDS = 90 * 60
+
+
+def fetch_swob():
+    return http_get(f"{DATAMART}/today/observations/swob-ml/latest/{SWOB_STATION}-swob.xml")
+
+
+def _swob_elements(root):
+    """Flattens the <elements> block's <element name=... value=.../> children
+    into a dict. Excludes <identification-elements>, a same-named sibling
+    holding station metadata rather than observed values."""
+    return {
+        el.attrib["name"]: el.attrib.get("value")
+        for el in root.findall(".//p:elements/p:element", SWOB_NS)
+        if el.attrib.get("name")
+    }
+
+
+def _swob_float(elements, name):
+    value = elements.get(name)
+    if value is None or value == "MSNG":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def parse_swob(xml_bytes):
+    """Returns a dict of {"ts", "precipitation_mm"?, "precip_type"?} or None
+    if there's nothing usable — no observation time, or neither field present
+    (e.g. present_weather code is one of the many non-precipitation codes)."""
+    root = ET.fromstring(xml_bytes)
+
+    time_el = root.find(".//om:samplingTime/gml:TimeInstant/gml:timePosition", SWOB_NS)
+    recorded_at = _normalize_iso(time_el.text) if time_el is not None else None
+    if not recorded_at:
+        return None
+
+    elements = _swob_elements(root)
+    amount_mm = _swob_float(elements, "rnfl_snc_last_syno_hr")
+
+    precip_type = None
+    code = _swob_float(elements, "prsnt_wx_1")
+    if code is not None:
+        precip_type = PRESENT_WEATHER_PRECIP_TYPE.get(int(code))
+
+    if amount_mm is None and precip_type is None:
+        return None
+
+    result = {"ts": recorded_at}
+    if amount_mm is not None:
+        result["precipitation_mm"] = amount_mm
+    if precip_type is not None:
+        result["precip_type"] = precip_type
+    return result
+
+
 # ---------------- MQTT publishing ----------------
 
 
@@ -299,6 +435,16 @@ class ECPublisher:
         reading, forecast = parse_citypage(xml_bytes)
 
         if reading:
+            # Same underlying station (CYYJ) and hour as citypage's reading —
+            # merge in the fields citypage doesn't carry, keeping citypage's
+            # own "ts" as the reading's timestamp. A failure here (network,
+            # bad XML) shouldn't cost us the reading/forecast/AQHI that
+            # already succeeded or are still to come.
+            swob = _best_effort("swob", lambda: parse_swob(fetch_swob()))
+            if swob and _seconds_between(swob["ts"], reading["ts"]) <= SWOB_MAX_AGE_SECONDS:
+                reading.update({k: v for k, v in swob.items() if k != "ts"})
+            elif swob:
+                print(f"  [skip] swob observation too stale ({swob['ts']} vs reading {reading['ts']})")
             self.client.publish(TOPIC_READING, json.dumps(reading), qos=1, retain=False)
             print(f"  {TOPIC_READING}  {json.dumps(reading)}")
         else:

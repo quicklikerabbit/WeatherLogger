@@ -78,6 +78,28 @@ class HandleReadingTests(LoggerTestCase):
         self.assertEqual(len(self._readings()), 1)
         self.assertEqual(self.logger.rows_written, 1)
 
+    def _precip_types(self):
+        return self.logger.conn.execute(
+            "SELECT device_id, recorded_at, precip_type FROM precip_type_readings"
+        ).fetchall()
+
+    def test_stores_precip_type_in_its_own_table_not_readings(self):
+        payload = json.dumps({
+            "ts": "2024-01-15T12:00:00Z",
+            "precipitation_mm": 2.4,
+            "precip_type": "rain",
+        })
+        self.logger._handle_reading("dev1", payload.encode())
+        self.assertEqual(self._precip_types(), [("dev1", "2024-01-15T12:00:00Z", "rain")])
+        # precip_type isn't numeric, so it must not also land in readings
+        # via the generic metric loop.
+        self.assertEqual(self._readings(), [("dev1", "precipitation_mm", 2.4, "2024-01-15T12:00:00Z")])
+
+    def test_omits_precip_type_row_when_absent(self):
+        payload = json.dumps({"ts": "2024-01-15T12:00:00Z", "temperature": 5.2})
+        self.logger._handle_reading("dev1", payload.encode())
+        self.assertEqual(self._precip_types(), [])
+
 
 class HandleForecastTests(LoggerTestCase):
     def _periods(self):
@@ -92,6 +114,17 @@ class HandleForecastTests(LoggerTestCase):
         })
         self.logger._handle_forecast("ec-victoria", payload.encode())
         self.assertEqual(len(self._periods()), 1)
+
+    def test_stores_precip_type(self):
+        payload = json.dumps({
+            "issued_at": "2024-01-15T12:00:00Z",
+            "periods": [{"name": "Tonight", "index": 0, "precip_type": "snow"}],
+        })
+        self.logger._handle_forecast("ec-victoria", payload.encode())
+        row = self.logger.conn.execute(
+            "SELECT precip_type FROM forecast_periods WHERE period_name = 'Tonight'"
+        ).fetchone()
+        self.assertEqual(row[0], "snow")
 
     def test_rejects_missing_issued_at(self):
         payload = json.dumps({"periods": [{"name": "Tonight"}]})
