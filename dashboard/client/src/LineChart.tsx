@@ -3,46 +3,11 @@ import { GridRows } from '@visx/grid'
 import { scaleLinear, scaleTime } from '@visx/scale'
 import { LinePath } from '@visx/shape'
 import { extent, max, min } from 'd3-array'
+import { metricFirmMax, metricInitialMax, metricStartAtZero, metricTickStep, yAxisLabel } from './metrics'
 
 export type Reading = { recorded_at: string; value: number }
 
 const margin = { top: 16, right: 24, bottom: 48, left: 56 }
-
-// Units for the metrics this project actually publishes (see logger.py,
-// fake_publisher.py, ec_publisher.py). Metrics with no known unit just
-// get their prettified name with no suffix.
-const UNITS: Record<string, string> = {
-  temperature: '°C',
-  dewpoint: '°C',
-  humidity: '%',
-  pressure: 'hPa',
-  visibility: 'km',
-  wind_speed: 'km/h',
-  wind_gust: 'km/h',
-  wind_bearing: '°',
-  pm25: 'µg/m³',
-  pm10: 'µg/m³',
-}
-
-const METRIC_LABELS: Record<string, string> = {
-  pm25: 'PM2.5',
-  pm10: 'PM10',
-}
-
-function prettifyMetric(metric: string): string {
-  if (METRIC_LABELS[metric]) return METRIC_LABELS[metric]
-  return metric
-    .split('_')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ')
-}
-
-export function yAxisLabel(metric: string): string {
-  if (!metric) return ''
-  const unit = UNITS[metric]
-  const name = prettifyMetric(metric)
-  return unit ? `${name} (${unit})` : name
-}
 
 // A single-reading series gives extent() a zero-width [date, date] range,
 // which collapses the time scale. Pad it so the lone point renders
@@ -84,16 +49,47 @@ export function LineChart({
     range: [0, innerWidth],
   })
 
+  // Anchoring the domain at 0 keeps the axis from exaggerating small
+  // fluctuations by auto-scaling to the data's tight range — but not every
+  // metric wants that (see metrics.ts for exceptions like pressure).
+  const dataMin = min(parsed, (d) => d.value) ?? 0
+  const dataMax = max(parsed, (d) => d.value) ?? 1
+  const startAtZero = metric ? metricStartAtZero(metric) : true
+  const initialMax = metric ? metricInitialMax(metric) : undefined
+  const domainMax = initialMax !== undefined ? Math.max(dataMax, initialMax) : dataMax
+  const domainMin = startAtZero ? Math.min(0, dataMin) : dataMin
+  const firmMax = metric ? metricFirmMax(metric) : false
   const yScale = scaleLinear({
-    domain: [min(parsed, (d) => d.value) ?? 0, max(parsed, (d) => d.value) ?? 1],
+    domain: [domainMin, domainMax],
     range: [innerHeight, 0],
-    nice: true,
+    // "nice" rounds the domain out to cleaner tick boundaries, but for a
+    // firmMax metric the resolved max is already exact (e.g. 360° for wind
+    // bearing) — niceing it would just round a correct bound into a wrong one.
+    nice: !firmMax,
   })
+
+  // d3's automatic tick step targets a tick *count*, not the domain's exact
+  // endpoints, so it can stop short of a firmMax (see metrics.ts). A metric
+  // with an explicit tickStep gets its ticks built by hand instead, walking
+  // from the domain min to max so the max always gets a tick of its own.
+  const tickStep = metric ? metricTickStep(metric) : undefined
+  const tickValues = tickStep
+    ? Array.from(
+        { length: Math.round((domainMax - domainMin) / tickStep) + 1 },
+        (_, i) => domainMin + i * tickStep,
+      )
+    : undefined
 
   return (
     <svg width={width} height={height}>
       <g transform={`translate(${margin.left},${margin.top})`}>
-        <GridRows scale={yScale} width={innerWidth} stroke="currentColor" strokeOpacity={0.15} />
+        <GridRows
+          scale={yScale}
+          width={innerWidth}
+          tickValues={tickValues}
+          stroke="currentColor"
+          strokeOpacity={0.15}
+        />
         <LinePath
           data={parsed}
           x={(d) => xScale(d.date) ?? 0}
@@ -105,7 +101,8 @@ export function LineChart({
           scale={yScale}
           stroke="currentColor"
           tickStroke="currentColor"
-          tickLabelProps={() => ({ fill: 'currentColor', fontSize: 11 })}
+          tickValues={tickValues}
+          tickLabelProps={() => ({ fill: 'currentColor', fontSize: 11, dx: '-2em' })}
           label={metric ? yAxisLabel(metric) : undefined}
           labelProps={{ fill: 'currentColor', fontSize: 12, textAnchor: 'middle' }}
           labelOffset={36}
