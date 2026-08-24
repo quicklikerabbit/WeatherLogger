@@ -16,9 +16,12 @@ import {
 
 export type Reading = { recorded_at: string; value: number }
 
-type Point = { date: Date; value: number }
+export type Point = { date: Date; value: number }
 
-const margin = { top: 16, right: 24, bottom: 48, left: 56 }
+// Exported so tests can translate a target data point into the client
+// coordinates a real pointer event would carry, without duplicating this
+// component's internal layout math.
+export const margin = { top: 16, right: 24, bottom: 48, left: 56 }
 
 const dateFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' })
 
@@ -38,7 +41,7 @@ export function computeXDomain(dates: Date[]): [Date, Date] {
 // nearer, using each Date's valueOf() (its ms timestamp) as the distance.
 const bisectDate = bisector<Point, Date>((d) => d.date).center
 
-function findClosestPoint(points: Point[], x0: Date): Point {
+export function findClosestPoint(points: Point[], x0: Date): Point {
   return points[bisectDate(points, x0)]
 }
 
@@ -191,6 +194,7 @@ export function LineChart({
           {/* Transparent hit-target for the tooltip, on top so it always
               receives the pointer events instead of the line/gridlines. */}
           <rect
+            data-testid="line-chart-overlay"
             x={0}
             y={0}
             width={innerWidth}
@@ -214,7 +218,7 @@ export function LineChart({
           applyPositionStyle
           className="pointer-events-none rounded border border-gray-300 bg-white px-2 py-1 text-xs whitespace-nowrap text-gray-700 shadow dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
         >
-          <div className="font-medium">
+          <div data-testid="tooltip-value" className="font-medium">
             {Math.round(tooltipData.value * 10) / 10}
             {unit ? ` ${unit}` : ''}
           </div>
