@@ -65,6 +65,10 @@ export function metricTickStep(metric: string): number | undefined {
   return METRICS[metric]?.tickStep
 }
 
+export function metricUnit(metric: string): string | undefined {
+  return METRICS[metric]?.unit
+}
+
 function prettifyMetric(metric: string): string {
   if (METRICS[metric]?.label) return METRICS[metric].label!
   return metric
