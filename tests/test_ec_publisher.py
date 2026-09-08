@@ -1,5 +1,6 @@
 import json
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import helpers  # noqa: F401  (adds repo root to sys.path)
@@ -12,8 +13,8 @@ from ec_publisher import (
     _normalize_iso,
     _seconds_between,
     fetch_aqhi,
+    fetch_climate_hourly,
     parse_citypage,
-    parse_swob,
 )
 
 CITYPAGE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -46,32 +47,25 @@ CITYPAGE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 </siteData>
 """
 
-SWOB_NS_DECL = (
-    'xmlns:om="http://www.opengis.net/om/1.0" '
-    'xmlns="http://dms.ec.gc.ca/schema/point-observation/2.0" '
-    'xmlns:gml="http://www.opengis.net/gml"'
-)
+def _recent_utc_date(hours_ago=1):
+    """fetch_climate_hourly checks its record's age against the real wall
+    clock, so fixture timestamps (unlike citypage/AQHI's) must be relative
+    to now rather than a fixed date."""
+    return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _swob_xml(rainfall="2.4", present_weather="65"):
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<om:ObservationCollection {SWOB_NS_DECL}>
-  <om:member>
-    <om:Observation>
-      <om:samplingTime>
-        <gml:TimeInstant><gml:timePosition>2024-01-15T12:00:00.000Z</gml:timePosition></gml:TimeInstant>
-      </om:samplingTime>
-      <om:result>
-        <elements>
-          <element name="air_temp" uom="&#176;C" value="5.2"/>
-          <element name="rnfl_snc_last_syno_hr" uom="mm" value="{rainfall}"/>
-          <element name="prsnt_wx_1" uom="code" value="{present_weather}"/>
-        </elements>
-      </om:result>
-    </om:Observation>
-  </om:member>
-</om:ObservationCollection>
-""".encode()
+def _climate_hourly_json(precip=0.4, flag=None, utc_date=None):
+    if utc_date is None:
+        utc_date = _recent_utc_date()
+    return json.dumps({
+        "features": [{
+            "properties": {
+                "PRECIP_AMOUNT": precip,
+                "PRECIP_AMOUNT_FLAG": flag,
+                "UTC_DATE": utc_date,
+            },
+        }],
+    }).encode()
 
 
 class NormalizeIsoTests(unittest.TestCase):
@@ -132,41 +126,44 @@ class ParseCitypageTests(unittest.TestCase):
         self.assertEqual(forecast["periods"][0]["precip_type"], "rain,snow")
 
 
-class ParseSwobTests(unittest.TestCase):
-    def test_parses_rainfall_and_maps_present_weather_to_a_precip_type(self):
-        result = parse_swob(_swob_xml(rainfall="2.4", present_weather="65"))
-        self.assertEqual(result, {
-            "ts": "2024-01-15T12:00:00Z",
-            "precipitation_mm": 2.4,
-            "precip_type": "rain",
-        })
+class FetchClimateHourlyTests(unittest.TestCase):
+    @patch("ec_publisher.http_get")
+    def test_parses_amount_and_timestamp(self, http_get):
+        ts = _recent_utc_date(hours_ago=2)
+        http_get.return_value = _climate_hourly_json(precip=0.4, utc_date=ts)
+        result = fetch_climate_hourly()
+        self.assertEqual(result, {"ts": ts + "Z", "precipitation_mm": 0.4})
 
-    def test_missing_rainfall_is_dropped_not_zero(self):
-        result = parse_swob(_swob_xml(rainfall="MSNG", present_weather="65"))
-        self.assertNotIn("precipitation_mm", result)
-        self.assertEqual(result["precip_type"], "rain")
+    @patch("ec_publisher.http_get")
+    def test_includes_quality_flag_when_present(self, http_get):
+        http_get.return_value = _climate_hourly_json(precip=0.0, flag="T")
+        result = fetch_climate_hourly()
+        self.assertEqual(result["quality_flag"], "T")
 
-    def test_non_precipitation_code_yields_no_precip_type(self):
-        # 125 = "No present or recent weather".
-        result = parse_swob(_swob_xml(rainfall="MSNG", present_weather="125"))
-        self.assertIsNone(result)
+    @patch("ec_publisher.http_get")
+    def test_no_flag_key_when_flag_is_null(self, http_get):
+        http_get.return_value = _climate_hourly_json(flag=None)
+        result = fetch_climate_hourly()
+        self.assertNotIn("quality_flag", result)
 
-    def test_unmapped_code_with_rainfall_still_reports_the_amount(self):
-        # 10 = "Mist" — not a precip_type code, but rainfall can still exist.
-        result = parse_swob(_swob_xml(rainfall="0.5", present_weather="10"))
-        self.assertEqual(result, {"ts": "2024-01-15T12:00:00Z", "precipitation_mm": 0.5})
+    @patch("ec_publisher.http_get")
+    def test_none_when_no_features(self, http_get):
+        http_get.return_value = json.dumps({"features": []}).encode()
+        self.assertIsNone(fetch_climate_hourly())
 
-    def test_none_without_a_sampling_time(self):
-        xml = b"""<?xml version="1.0"?>
-<om:ObservationCollection """ + SWOB_NS_DECL.encode() + b""">
-  <om:member><om:Observation>
-    <om:result><elements>
-      <element name="rnfl_snc_last_syno_hr" value="1.0"/>
-    </elements></om:result>
-  </om:Observation></om:member>
-</om:ObservationCollection>
-"""
-        self.assertIsNone(parse_swob(xml))
+    @patch("ec_publisher.http_get")
+    def test_none_when_amount_missing(self, http_get):
+        http_get.return_value = json.dumps({
+            "features": [{"properties": {"PRECIP_AMOUNT": None, "UTC_DATE": _recent_utc_date()}}],
+        }).encode()
+        self.assertIsNone(fetch_climate_hourly())
+
+    @patch("ec_publisher.http_get")
+    def test_none_when_the_latest_hour_is_too_old(self, http_get):
+        # The archive stopped advancing — this shouldn't republish a
+        # years-stale value as if it were current.
+        http_get.return_value = _climate_hourly_json(utc_date="2000-01-01T00:00:00")
+        self.assertIsNone(fetch_climate_hourly())
 
 
 class SecondsBetweenTests(unittest.TestCase):
@@ -194,10 +191,13 @@ class PollOnceTests(unittest.TestCase):
                 return json.loads(call.args[1])
         return None
 
+    def _published_all(self, pub, topic):
+        return [json.loads(call.args[1]) for call in pub.client.publish.call_args_list if call.args[0] == topic]
+
     @patch("ec_publisher.fetch_aqhi", return_value=(None, None))
-    @patch("ec_publisher.fetch_swob", side_effect=RuntimeError("connection reset"))
+    @patch("ec_publisher.fetch_climate_hourly", side_effect=RuntimeError("connection reset"))
     @patch("ec_publisher.fetch_citypage_xml", return_value=CITYPAGE_XML)
-    def test_swob_failure_does_not_block_reading_or_forecast(self, *_mocks):
+    def test_climate_hourly_failure_does_not_block_reading_or_forecast(self, *_mocks):
         pub = self._publisher()
         pub.poll_once()
         topics = self._published_topics(pub)
@@ -205,30 +205,37 @@ class PollOnceTests(unittest.TestCase):
         self.assertIn(TOPIC_FORECAST, topics)
 
     @patch("ec_publisher.fetch_aqhi", return_value=(None, None))
-    @patch("ec_publisher.fetch_swob", return_value=_swob_xml())
+    @patch("ec_publisher.fetch_climate_hourly",
+           return_value={"ts": "2024-01-15T06:00:00Z", "precipitation_mm": 2.4, "quality_flag": "T"})
     @patch("ec_publisher.fetch_citypage_xml", return_value=CITYPAGE_XML)
-    def test_fresh_swob_observation_is_merged_into_the_reading(self, *_mocks):
+    def test_climate_hourly_precipitation_is_published_as_its_own_reading(self, *_mocks):
         pub = self._publisher()
         pub.poll_once()
-        reading = self._published(pub, TOPIC_READING)
-        self.assertEqual(reading["precipitation_mm"], 2.4)
-        self.assertEqual(reading["precip_type"], "rain")
-        # citypage's own ts is kept, not overwritten by swob's.
-        self.assertEqual(reading["ts"], "2024-01-15T12:00:00Z")
+        readings = self._published_all(pub, TOPIC_READING)
+        self.assertEqual(len(readings), 2)
+
+        citypage_reading = next(r for r in readings if "temperature" in r)
+        precip_reading = next(r for r in readings if "precipitation_mm" in r)
+
+        # citypage's reading isn't touched by the precipitation reading —
+        # each keeps its own source's timestamp rather than one overwriting
+        # the other.
+        self.assertEqual(citypage_reading["ts"], "2024-01-15T12:00:00Z")
+        self.assertEqual(precip_reading, {
+            "ts": "2024-01-15T06:00:00Z",
+            "precipitation_mm": 2.4,
+            "precipitation_mm_flag": "T",
+        })
 
     @patch("ec_publisher.fetch_aqhi", return_value=(None, None))
-    @patch("ec_publisher.fetch_swob")
+    @patch("ec_publisher.fetch_climate_hourly", return_value=None)
     @patch("ec_publisher.fetch_citypage_xml", return_value=CITYPAGE_XML)
-    def test_stale_swob_observation_is_not_merged(self, _fetch_citypage, fetch_swob, _fetch_aqhi):
-        # citypage's reading is at 12:00:00Z; this swob file is 3 hours old —
-        # a stalled station whose "latest" symlink hasn't moved.
-        stale_xml = _swob_xml().decode().replace("2024-01-15T12:00:00.000Z", "2024-01-15T09:00:00.000Z")
-        fetch_swob.return_value = stale_xml.encode()
+    def test_no_extra_reading_when_climate_hourly_has_nothing_recent_enough(self, *_mocks):
         pub = self._publisher()
         pub.poll_once()
-        reading = self._published(pub, TOPIC_READING)
-        self.assertNotIn("precipitation_mm", reading)
-        self.assertNotIn("precip_type", reading)
+        readings = self._published_all(pub, TOPIC_READING)
+        self.assertEqual(len(readings), 1)
+        self.assertNotIn("precipitation_mm", readings[0])
 
 
 class FetchAqhiTests(unittest.TestCase):

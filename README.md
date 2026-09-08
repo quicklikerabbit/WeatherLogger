@@ -199,5 +199,3 @@ change takes effect.
 ## Future work
 
 - Replace `fake_publisher.py` with real sensor hardware.
-- Consider a second EC source (SWOB) for station-level observation
-  precision once there's a real yard sensor to compare it against.

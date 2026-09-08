@@ -1,10 +1,15 @@
 CREATE TABLE readings (
-    id          INTEGER PRIMARY KEY,
-    device_id   TEXT    NOT NULL,
-    metric      TEXT    NOT NULL,
-    value       REAL    NOT NULL,
-    recorded_at TEXT    NOT NULL,
-    received_at TEXT    NOT NULL DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY,
+    device_id     TEXT    NOT NULL,
+    metric        TEXT    NOT NULL,
+    value         REAL    NOT NULL,
+    recorded_at   TEXT    NOT NULL,
+    received_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    -- QC flag from the upstream source, e.g. Environment Canada's climate
+    -- archive reporting 'T' (trace) or 'E' (estimated) for precipitation_mm.
+    -- NULL for a clean value and for every metric whose source carries no
+    -- such flag at all.
+    quality_flag  TEXT
 );
 
 -- UNIQUE so a QoS-1 redelivery of the same reading (same device/metric/
@@ -63,21 +68,3 @@ CREATE TABLE aqhi (
 
 CREATE UNIQUE INDEX idx_aqhi_lookup ON aqhi (device_id, kind, valid_at, period_name);
 CREATE INDEX idx_aqhi_time ON aqhi (valid_at);
-
--- Precipitation type for an hourly observation, decoded from Environment
--- Canada's SWOB-ML present-weather code. Kept out of `readings` since the
--- value is categorical text, not a numeric metric — `readings` requires
--- `value REAL NOT NULL`. The paired measurement (precipitation_mm) is a
--- normal numeric metric and lives in `readings` like temperature/humidity.
-CREATE TABLE precip_type_readings (
-    id           INTEGER PRIMARY KEY,
-    device_id    TEXT    NOT NULL,
-    recorded_at  TEXT    NOT NULL,
-    precip_type  TEXT    NOT NULL CHECK (precip_type IN (
-        'drizzle', 'rain', 'snow', 'mixed', 'freezing_rain',
-        'ice_pellets', 'hail', 'thunderstorm'
-    )),
-    received_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE UNIQUE INDEX idx_precip_type_lookup ON precip_type_readings (device_id, recorded_at);

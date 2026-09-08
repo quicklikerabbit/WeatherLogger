@@ -42,9 +42,12 @@ STATUS_TOPIC = "sensors/+/status"
 FORECAST_TOPIC = "sensors/+/forecast"
 AQHI_TOPIC = "sensors/+/aqhi"
 
-# Keys in the payload that aren't numeric measurements. precip_type is
-# categorical text — handled separately, see _handle_reading.
-NON_METRIC_KEYS = {"ts", "precip_type"}
+# Keys in the payload that aren't their own numeric measurement: "ts" is
+# metadata, and each entry in FLAG_KEYS names a sibling key carrying another
+# metric's QC flag (e.g. "precipitation_mm_flag" rides along with
+# "precipitation_mm" rather than becoming its own row — see _handle_reading).
+FLAG_KEYS = {"precipitation_mm": "precipitation_mm_flag"}
+NON_METRIC_KEYS = {"ts", *FLAG_KEYS.values()}
 
 # --------------------------------------------------------------------
 
@@ -189,12 +192,15 @@ class Logger:
             if isinstance(value, float) and not math.isfinite(value):
                 print(f"  [skip] {device_id}.{key} is not finite: {value!r}")
                 continue
-            rows.append((device_id, key, float(value), recorded_at, received_at))
+            quality_flag = payload.get(FLAG_KEYS[key]) if key in FLAG_KEYS else None
+            if not isinstance(quality_flag, str) or not quality_flag:
+                quality_flag = None
+            rows.append((device_id, key, float(value), recorded_at, received_at, quality_flag))
 
         if rows:
             inserted = self._insert_rows(
                 "readings",
-                ("device_id", "metric", "value", "recorded_at", "received_at"),
+                ("device_id", "metric", "value", "recorded_at", "received_at", "quality_flag"),
                 rows,
             )
             if inserted is not None:
@@ -204,14 +210,6 @@ class Logger:
                 self.rows_written += inserted
                 metrics = ", ".join(f"{r[1]}={r[2]}" for r in rows)
                 print(f"  {device_id}: {metrics}  (total {self.rows_written})")
-
-        precip_type = payload.get("precip_type")
-        if isinstance(precip_type, str) and precip_type:
-            self._insert_rows(
-                "precip_type_readings",
-                ("device_id", "recorded_at", "precip_type", "received_at"),
-                [(device_id, recorded_at, precip_type, received_at)],
-            )
 
     def _handle_forecast(self, device_id, raw_payload):
         payload = self._parse_payload(device_id, raw_payload, "forecast")

@@ -78,27 +78,39 @@ class HandleReadingTests(LoggerTestCase):
         self.assertEqual(len(self._readings()), 1)
         self.assertEqual(self.logger.rows_written, 1)
 
-    def _precip_types(self):
-        return self.logger.conn.execute(
-            "SELECT device_id, recorded_at, precip_type FROM precip_type_readings"
-        ).fetchall()
+    def _quality_flag(self, metric):
+        row = self.logger.conn.execute(
+            "SELECT quality_flag FROM readings WHERE metric = ?", (metric,)
+        ).fetchone()
+        return row[0] if row else None
 
-    def test_stores_precip_type_in_its_own_table_not_readings(self):
+    def test_precipitation_flag_rides_along_with_its_metric_row(self):
         payload = json.dumps({
             "ts": "2024-01-15T12:00:00Z",
             "precipitation_mm": 2.4,
-            "precip_type": "rain",
+            "precipitation_mm_flag": "T",
         })
         self.logger._handle_reading("dev1", payload.encode())
-        self.assertEqual(self._precip_types(), [("dev1", "2024-01-15T12:00:00Z", "rain")])
-        # precip_type isn't numeric, so it must not also land in readings
-        # via the generic metric loop.
+        # the flag isn't numeric, so it must not also land in readings as
+        # its own metric row via the generic loop.
         self.assertEqual(self._readings(), [("dev1", "precipitation_mm", 2.4, "2024-01-15T12:00:00Z")])
+        self.assertEqual(self._quality_flag("precipitation_mm"), "T")
 
-    def test_omits_precip_type_row_when_absent(self):
-        payload = json.dumps({"ts": "2024-01-15T12:00:00Z", "temperature": 5.2})
+    def test_quality_flag_is_null_when_absent(self):
+        payload = json.dumps({"ts": "2024-01-15T12:00:00Z", "precipitation_mm": 0.0})
         self.logger._handle_reading("dev1", payload.encode())
-        self.assertEqual(self._precip_types(), [])
+        self.assertIsNone(self._quality_flag("precipitation_mm"))
+
+    def test_other_metrics_never_get_a_flag(self):
+        payload = json.dumps({
+            "ts": "2024-01-15T12:00:00Z",
+            "temperature": 5.2,
+            "precipitation_mm_flag": "T",  # no precipitation_mm in this payload
+        })
+        self.logger._handle_reading("dev1", payload.encode())
+        self.assertIsNone(self._quality_flag("temperature"))
+        # the flag key still isn't inserted as its own metric row.
+        self.assertEqual(len(self._readings()), 1)
 
 
 class HandleForecastTests(LoggerTestCase):

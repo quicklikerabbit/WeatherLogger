@@ -17,6 +17,11 @@ Sources (see https://dd.weather.gc.ca):
     Victoria falls under region "pyr" (Pacific and Yukon), station code
     JBOBQ ("Victoria / Saanich") — found by listing the region directory,
     since there's no sitewide index like citypage's.
+  - Precipitation amount from the MSC GeoMet OGC API's climate-hourly
+    collection (api.weather.gc.ca), station 1018611 (Victoria Gonzales CS).
+    This is the National Climate Archive, not Datamart — the same
+    observations, but run through the archive's QC before being queryable,
+    at the cost of lagging real time by roughly a day rather than minutes.
 
 Usage:
     source ~/weather/venv/bin/activate
@@ -64,7 +69,12 @@ CITYPAGE_PROVINCE = "BC"
 CITYPAGE_SITE = "s0000775"    # Victoria
 AQHI_REGION = "pyr"           # Pacific and Yukon Region
 AQHI_LOCATION = "JBOBQ"       # Victoria / Saanich
-SWOB_STATION = "CYYJ-MAN"     # Victoria Int'l Airport, manned/augmented obs
+
+GEOMET = "https://api.weather.gc.ca"
+# Victoria Gonzales CS — an automated climate station. CYYJ (the airport,
+# used for the old SWOB-ML feed) stopped reporting into the climate archive
+# in 2013, so this is the nearest station that still does.
+CLIMATE_IDENTIFIER = "1018611"
 
 USER_AGENT = "WeatherLogger/1.0 (personal weather station project)"
 HREF_RE = re.compile(r'href="([^"?][^"]*)"')
@@ -288,115 +298,46 @@ def fetch_aqhi():
     return observation, forecast
 
 
-# ---------------- SWOB-ML (precipitation observation) ----------------
+# ---------------- Climate-hourly (precipitation observation) ----------------
 
-# citypage's currentConditions has no precipitation field at all — this is
-# the only Datamart product that reports a measured amount for Victoria.
-# The "latest" symlink-style directory always holds the current file, so
-# unlike citypage/AQHI there's no hour/date directory to search.
-SWOB_NS = {
-    "om": "http://www.opengis.net/om/1.0",
-    "gml": "http://www.opengis.net/gml",
-    "p": "http://dms.ec.gc.ca/schema/point-observation/2.0",
-}
-
-# present_weather code -> precip_type, from the SWOB-ML User Guide's
-# std_code_src/present_weather table (manned-station codes 0-184; codes not
-# listed here — sky/visibility conditions, dust, fog, "recent" weather that
-# isn't falling right now, reserved values — aren't precipitation and map to
-# no precip_type). Some source codes bundle two phenomena (e.g. "drizzle or
-# snow grains"); the bundled ones are filed under the first-listed category.
-PRESENT_WEATHER_PRECIP_TYPE = {
-    20: "drizzle", 21: "rain", 22: "snow", 23: "mixed", 24: "freezing_rain",
-    25: "rain", 26: "snow", 27: "hail", 29: "thunderstorm",
-    50: "drizzle", 51: "drizzle", 52: "drizzle", 53: "drizzle",
-    54: "drizzle", 55: "drizzle", 56: "drizzle",
-    57: "freezing_rain", 58: "freezing_rain", 59: "freezing_rain",
-    60: "freezing_rain", 61: "freezing_rain",
-    62: "drizzle", 63: "drizzle",
-    64: "rain", 65: "rain", 66: "rain", 67: "rain", 68: "rain", 69: "rain", 70: "rain",
-    71: "freezing_rain", 72: "freezing_rain", 73: "freezing_rain",
-    74: "freezing_rain", 75: "freezing_rain",
-    76: "mixed", 77: "mixed",
-    78: "snow", 79: "snow", 80: "snow", 81: "snow", 82: "snow", 83: "snow", 84: "snow",
-    85: "ice_pellets", 86: "ice_pellets", 87: "ice_pellets", 88: "ice_pellets",
-    89: "ice_pellets", 90: "ice_pellets", 91: "snow",
-    92: "ice_pellets", 93: "ice_pellets", 94: "ice_pellets", 95: "ice_pellets", 96: "ice_pellets",
-    97: "rain", 98: "rain", 99: "rain", 100: "rain", 101: "rain",
-    102: "mixed", 103: "mixed",
-    104: "snow", 105: "snow", 106: "snow", 107: "snow", 108: "snow",
-    109: "hail", 110: "hail",
-    111: "hail", 112: "hail", 113: "hail", 114: "hail", 115: "hail",
-    116: "rain", 117: "rain", 118: "mixed", 119: "mixed",
-    120: "thunderstorm", 121: "thunderstorm", 122: "thunderstorm",
-    123: "thunderstorm", 124: "thunderstorm",
-    145: "thunderstorm", 146: "thunderstorm",
-    148: "hail", 149: "hail", 150: "hail", 151: "hail",
-    152: "ice_pellets", 153: "ice_pellets", 154: "ice_pellets", 155: "ice_pellets",
-}
+# citypage's currentConditions has no precipitation field at all. The
+# climate-hourly collection is the National Climate Archive's QC'd record of
+# the same kind of automated-station observation SWOB-ML carries in real
+# time — but it lags real time by roughly a day rather than minutes, since
+# each hour has to pass through the archive's ingest pipeline first. That's
+# far looser than citypage's ~5-minute publication delay, so unlike the
+# forecast/AQHI merge there's no "is this the same hour as the reading"
+# check here — we just take whatever the archive's most recent hour is and
+# publish it as its own reading, under its own timestamp.
+CLIMATE_HOURLY_MAX_AGE_SECONDS = 48 * 3600
 
 
-# How far apart the SWOB observation's own timestamp and citypage's reading
-# timestamp may be for the two to still be treated as the same hour's
-# observation. Both update roughly hourly; 90 minutes covers a slow bulletin
-# on either side without accepting an observation from a station that has
-# stopped updating (the "latest" file otherwise just keeps serving its last
-# value forever).
-SWOB_MAX_AGE_SECONDS = 90 * 60
-
-
-def fetch_swob():
-    return http_get(f"{DATAMART}/today/observations/swob-ml/latest/{SWOB_STATION}-swob.xml")
-
-
-def _swob_elements(root):
-    """Flattens the <elements> block's <element name=... value=.../> children
-    into a dict. Excludes <identification-elements>, a same-named sibling
-    holding station metadata rather than observed values."""
-    return {
-        el.attrib["name"]: el.attrib.get("value")
-        for el in root.findall(".//p:elements/p:element", SWOB_NS)
-        if el.attrib.get("name")
-    }
-
-
-def _swob_float(elements, name):
-    value = elements.get(name)
-    if value is None or value == "MSNG":
-        return None
-    try:
-        return float(value)
-    except ValueError:
+def fetch_climate_hourly():
+    """Returns {"ts", "precipitation_mm", "quality_flag"?} for the most
+    recent hour the archive has for CLIMATE_IDENTIFIER, or None if nothing
+    within CLIMATE_HOURLY_MAX_AGE_SECONDS is available (a stalled archive
+    feed otherwise means silently republishing the same old value forever)."""
+    url = (f"{GEOMET}/collections/climate-hourly/items"
+           f"?CLIMATE_IDENTIFIER={CLIMATE_IDENTIFIER}&sortby=-UTC_DATE&limit=1&f=json")
+    data = json.loads(http_get(url))
+    features = data.get("features") or []
+    if not features:
         return None
 
-
-def parse_swob(xml_bytes):
-    """Returns a dict of {"ts", "precipitation_mm"?, "precip_type"?} or None
-    if there's nothing usable — no observation time, or neither field present
-    (e.g. present_weather code is one of the many non-precipitation codes)."""
-    root = ET.fromstring(xml_bytes)
-
-    time_el = root.find(".//om:samplingTime/gml:TimeInstant/gml:timePosition", SWOB_NS)
-    recorded_at = _normalize_iso(time_el.text) if time_el is not None else None
-    if not recorded_at:
+    props = features[0].get("properties", {})
+    recorded_at = _normalize_iso(props.get("UTC_DATE"))
+    amount_mm = props.get("PRECIP_AMOUNT")
+    if not recorded_at or not isinstance(amount_mm, (int, float)) or isinstance(amount_mm, bool):
         return None
 
-    elements = _swob_elements(root)
-    amount_mm = _swob_float(elements, "rnfl_snc_last_syno_hr")
-
-    precip_type = None
-    code = _swob_float(elements, "prsnt_wx_1")
-    if code is not None:
-        precip_type = PRESENT_WEATHER_PRECIP_TYPE.get(int(code))
-
-    if amount_mm is None and precip_type is None:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if _seconds_between(recorded_at, now) > CLIMATE_HOURLY_MAX_AGE_SECONDS:
         return None
 
-    result = {"ts": recorded_at}
-    if amount_mm is not None:
-        result["precipitation_mm"] = amount_mm
-    if precip_type is not None:
-        result["precip_type"] = precip_type
+    result = {"ts": recorded_at, "precipitation_mm": float(amount_mm)}
+    flag = props.get("PRECIP_AMOUNT_FLAG")
+    if isinstance(flag, str) and flag:
+        result["quality_flag"] = flag
     return result
 
 
@@ -435,20 +376,23 @@ class ECPublisher:
         reading, forecast = parse_citypage(xml_bytes)
 
         if reading:
-            # Same underlying station (CYYJ) and hour as citypage's reading —
-            # merge in the fields citypage doesn't carry, keeping citypage's
-            # own "ts" as the reading's timestamp. A failure here (network,
-            # bad XML) shouldn't cost us the reading/forecast/AQHI that
-            # already succeeded or are still to come.
-            swob = _best_effort("swob", lambda: parse_swob(fetch_swob()))
-            if swob and _seconds_between(swob["ts"], reading["ts"]) <= SWOB_MAX_AGE_SECONDS:
-                reading.update({k: v for k, v in swob.items() if k != "ts"})
-            elif swob:
-                print(f"  [skip] swob observation too stale ({swob['ts']} vs reading {reading['ts']})")
             self.client.publish(TOPIC_READING, json.dumps(reading), qos=1, retain=False)
             print(f"  {TOPIC_READING}  {json.dumps(reading)}")
         else:
             print("  [skip] no current conditions in this bulletin")
+
+        # Published as its own reading, under its own (much older) timestamp,
+        # rather than merged into citypage's reading above — see
+        # fetch_climate_hourly's docstring for why the two can't share a ts.
+        climate = _best_effort("climate-hourly", fetch_climate_hourly)
+        if climate:
+            precip_reading = {"ts": climate["ts"], "precipitation_mm": climate["precipitation_mm"]}
+            if "quality_flag" in climate:
+                precip_reading["precipitation_mm_flag"] = climate["quality_flag"]
+            self.client.publish(TOPIC_READING, json.dumps(precip_reading), qos=1, retain=False)
+            print(f"  {TOPIC_READING}  {json.dumps(precip_reading)}")
+        else:
+            print("  [skip] no climate-hourly precipitation this poll")
 
         if forecast:
             self.client.publish(TOPIC_FORECAST, json.dumps(forecast), qos=1, retain=False)
