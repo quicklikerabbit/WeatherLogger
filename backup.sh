@@ -9,7 +9,9 @@ REMOTE_TMP="/tmp/sensors-snapshot-$STAMP.db"
 LOCAL_DIR="dashboard/backups"
 LOCAL_FILE="$LOCAL_DIR/sensors-$STAMP.db"
 LOCAL_PARTIAL="$LOCAL_FILE.partial"
-KEEP_COUNT=20
+# Each snapshot is a full copy of sensors.db, so the newest one already
+# contains everything the older ones do — no need to keep history around.
+KEEP_COUNT=2
 
 mkdir -p "$LOCAL_DIR"
 
@@ -32,7 +34,9 @@ echo "Snapshot saved to $LOCAL_FILE"
 
 # Keep only the KEEP_COUNT most recent snapshots — otherwise every run's
 # .db file sits in $LOCAL_DIR forever, and the dashboard server rescans
-# the whole directory on every request.
+# the whole directory on every request. This only runs after the new
+# snapshot has been moved into place (`set -e` exits earlier on any
+# failure), so a failed backup never deletes the last good copy.
 count=0
 while IFS= read -r old_snapshot; do
   count=$((count + 1))
