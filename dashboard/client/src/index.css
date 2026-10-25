@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 /* Categorical series colors, one slot per device (see seriesColors.ts).
    Slot order is what keeps adjacent series distinguishable under color

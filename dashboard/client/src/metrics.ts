@@ -3,59 +3,59 @@
 // and every chart picks it up — this is the one place to edit.
 export type MetricConfig = {
   // Shown in the y-axis label as "Name (unit)". Omit for a unitless metric.
-  unit?: string
+  unit?: string;
   // Overrides the auto-prettified name (snake_case -> Title Case) when that
   // doesn't read well, e.g. "pm25" -> "PM2.5" instead of "Pm25".
-  label?: string
+  label?: string;
   // Whether the y-axis domain should include 0. True is the right default
   // for most metrics (precipitation, humidity, wind...) since they can't go
   // negative and a 0 baseline avoids exaggerating small fluctuations. Set to
   // false for a metric whose meaningful range sits far from 0, where forcing
   // a 0 baseline would flatten the chart into an unreadable sliver.
-  startAtZero?: boolean
+  startAtZero?: boolean;
   // Floor for the axis's max on first load: the chart shows at least this
   // much range even if the loaded data doesn't reach it (e.g. wind bearing
   // is 0-360° regardless of what the last few readings happened to hit).
   // The axis still grows past it if the data's own max is larger.
-  initialMax?: number
+  initialMax?: number;
   // If true, don't let d3's "nice" rounding round the axis max up past
   // initialMax/the data max to a rounder-looking number (e.g. 360 -> 400).
   // Only relevant when the resolved max is already a meaningful, exact
   // bound — like wind bearing's 0-360° compass — rather than an arbitrary
   // data value that benefits from being rounded to a cleaner tick.
-  firmMax?: boolean
+  firmMax?: boolean;
   // Explicit spacing between axis ticks, in the metric's own units. d3's
   // automatic tick step is chosen to hit a target *count*, not to land on
   // the domain's exact endpoints — for wind bearing's 0-360 range it picks
   // a step of 50, whose ticks stop at 350 and never draw one at the firm
   // max itself. A step that evenly divides the range (90, one per compass
   // point) guarantees a tick lands exactly on it.
-  tickStep?: number
+  tickStep?: number;
   // How this metric is drawn when it shares an overview panel with another
   // (see PANELS). Color already identifies the device, so line style is
   // what tells, say, temperature from dewpoint apart. 'dots' is for a
   // metric reported only intermittently (wind gusts) — a line through
   // sparse points would invent values for the gaps between them.
-  mark?: SeriesMark
-}
+  mark?: SeriesMark;
+};
 
-export type SeriesMark = 'line' | 'dashed' | 'dots' | 'bar'
+export type SeriesMark = "line" | "dashed" | "dots" | "bar";
 
-const DEFAULT_START_AT_ZERO = true
+const DEFAULT_START_AT_ZERO = true;
 
 export const METRICS: Record<string, MetricConfig> = {
-  temperature: { unit: '°C' },
-  dewpoint: { unit: '°C', mark: 'dashed' },
-  humidity: { unit: '%' },
-  pressure: { unit: 'hPa', startAtZero: false },
-  visibility: { unit: 'km' },
-  wind_speed: { unit: 'km/h' },
-  wind_gust: { unit: 'km/h', mark: 'dots' },
-  wind_bearing: { unit: '°', initialMax: 360, firmMax: true, tickStep: 90 },
-  pm25: { unit: 'µg/m³', label: 'PM2.5' },
-  pm10: { unit: 'µg/m³', label: 'PM10', mark: 'dashed' },
-  precipitation_mm: { unit: 'mm', label: 'Precipitation' },
-}
+  temperature: { unit: "°C" },
+  dewpoint: { unit: "°C", mark: "dashed" },
+  humidity: { unit: "%" },
+  pressure: { unit: "hPa", startAtZero: false },
+  visibility: { unit: "km" },
+  wind_speed: { unit: "km/h" },
+  wind_gust: { unit: "km/h", mark: "dots" },
+  wind_bearing: { unit: "°", initialMax: 360, firmMax: true, tickStep: 90 },
+  pm25: { unit: "µg/m³", label: "PM2.5" },
+  pm10: { unit: "µg/m³", label: "PM10", mark: "dashed" },
+  precipitation_mm: { unit: "mm", label: "Precipitation" },
+};
 
 // The overview's panels — one per measurement type, each drawing every
 // device's stream for its metrics on one chart. Metrics grouped into a
@@ -67,63 +67,68 @@ export const METRICS: Record<string, MetricConfig> = {
 // rose of how often each bearing occurred, which needs both bearing and
 // speed.
 export type PanelConfig = {
-  id: string
-  title: string
-  metrics: string[]
-  kind?: 'line' | 'precip' | 'wind_rose'
-}
+  id: string;
+  title: string;
+  metrics: string[];
+  kind?: "line" | "precip" | "wind_rose";
+};
 
 export const PANELS: PanelConfig[] = [
-  { id: 'temperature', title: 'Temperature', metrics: ['temperature', 'dewpoint'] },
-  { id: 'precipitation', title: 'Precipitation', metrics: ['precipitation_mm'], kind: 'precip' },
-  { id: 'humidity', title: 'Humidity', metrics: ['humidity'] },
-  { id: 'pressure', title: 'Pressure', metrics: ['pressure'] },
-  { id: 'wind', title: 'Wind speed', metrics: ['wind_speed', 'wind_gust'] },
-  { id: 'wind_direction', title: 'Wind direction', metrics: ['wind_bearing', 'wind_speed'], kind: 'wind_rose' },
-  { id: 'visibility', title: 'Visibility', metrics: ['visibility'] },
-  { id: 'air_quality', title: 'Air quality', metrics: ['pm25', 'pm10'] },
-]
+  { id: "temperature", title: "Temperature", metrics: ["temperature", "dewpoint"] },
+  { id: "precipitation", title: "Precipitation", metrics: ["precipitation_mm"], kind: "precip" },
+  { id: "humidity", title: "Humidity", metrics: ["humidity"] },
+  { id: "pressure", title: "Pressure", metrics: ["pressure"] },
+  { id: "wind", title: "Wind speed", metrics: ["wind_speed", "wind_gust"] },
+  {
+    id: "wind_direction",
+    title: "Wind direction",
+    metrics: ["wind_bearing", "wind_speed"],
+    kind: "wind_rose",
+  },
+  { id: "visibility", title: "Visibility", metrics: ["visibility"] },
+  { id: "air_quality", title: "Air quality", metrics: ["pm25", "pm10"] },
+];
 
 export function metricMark(metric: string): SeriesMark {
-  return METRICS[metric]?.mark ?? 'line'
+  return METRICS[metric]?.mark ?? "line";
 }
 
 export function panelAxisLabel(panel: PanelConfig): string {
-  const unit = metricUnit(panel.metrics[0])
-  return unit ? `${panel.title} (${unit})` : panel.title
+  const unit = metricUnit(panel.metrics[0]);
+  return unit ? `${panel.title} (${unit})` : panel.title;
 }
 
 export function metricStartAtZero(metric: string): boolean {
-  return METRICS[metric]?.startAtZero ?? DEFAULT_START_AT_ZERO
+  return METRICS[metric]?.startAtZero ?? DEFAULT_START_AT_ZERO;
 }
 
 export function metricInitialMax(metric: string): number | undefined {
-  return METRICS[metric]?.initialMax
+  return METRICS[metric]?.initialMax;
 }
 
 export function metricFirmMax(metric: string): boolean {
-  return METRICS[metric]?.firmMax ?? false
+  return METRICS[metric]?.firmMax ?? false;
 }
 
 export function metricTickStep(metric: string): number | undefined {
-  return METRICS[metric]?.tickStep
+  return METRICS[metric]?.tickStep;
 }
 
 export function metricUnit(metric: string): string | undefined {
-  return METRICS[metric]?.unit
+  return METRICS[metric]?.unit;
 }
 
 export function prettifyMetric(metric: string): string {
-  if (METRICS[metric]?.label) return METRICS[metric].label!
+  if (METRICS[metric]?.label) return METRICS[metric].label!;
   return metric
-    .split('_')
+    .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ')
+    .join(" ");
 }
 
 export function yAxisLabel(metric: string): string {
-  if (!metric) return ''
-  const unit = METRICS[metric]?.unit
-  const name = prettifyMetric(metric)
-  return unit ? `${name} (${unit})` : name
+  if (!metric) return "";
+  const unit = METRICS[metric]?.unit;
+  const name = prettifyMetric(metric);
+  return unit ? `${name} (${unit})` : name;
 }

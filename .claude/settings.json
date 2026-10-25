@@ -8,9 +8,39 @@
       "Bash(npm run build *)",
       "Bash(npm run lint)",
       "Bash(npm run lint *)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run format)",
+      "Bash(npm run format *)",
       "Bash(python -m unittest *)",
       "Bash(python3 -m unittest *)",
       "Bash(venv/bin/python -m unittest *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format.sh",
+            "timeout": 60,
+            "statusMessage": "Formatting with oxfmt"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check.sh",
+            "timeout": 180,
+            "statusMessage": "Type-checking and linting"
+          }
+        ]
+      }
     ]
   }
 }

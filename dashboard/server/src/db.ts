@@ -18,9 +18,7 @@ function findLatestSnapshot(backupsDir: string): string {
     });
 
   if (entries.length === 0) {
-    throw new Error(
-      `No .db snapshots found in ${backupsDir}. Run backup.sh first.`,
-    );
+    throw new Error(`No .db snapshots found in ${backupsDir}. Run backup.sh first.`);
   }
 
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs);

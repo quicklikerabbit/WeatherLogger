@@ -4,9 +4,9 @@
 // from currentConditions, which EC attributes to a specific station —
 // Victoria Int'l Airport (YYJ), 48.65N 123.43W — not downtown Victoria.
 const DEVICE_LOCATIONS: Record<string, string> = {
-  'ec-victoria': "Victoria Int'l Airport (YYJ), BC, Canada — Environment Canada",
-}
+  "ec-victoria": "Victoria Int'l Airport (YYJ), BC, Canada — Environment Canada",
+};
 
 export function deviceLocation(deviceId: string): string | null {
-  return DEVICE_LOCATIONS[deviceId] ?? null
+  return DEVICE_LOCATIONS[deviceId] ?? null;
 }

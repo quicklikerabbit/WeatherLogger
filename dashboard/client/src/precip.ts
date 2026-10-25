@@ -1,51 +1,51 @@
-import type { Reading } from './LineChart'
+import type { Reading } from "./lineSeries";
 
 // precipitation_mm readings are hourly amounts (Environment Canada's
 // climate-hourly archive), so a bar is the sum of the hours that fall in
 // its bucket: one bar per hour for a short window, one per day for longer
 // ones, where 72+ hourly bars would be too thin to read.
-export type Granularity = 'hour' | 'day'
+export type Granularity = "hour" | "day";
 
-const HOUR_MS = 60 * 60 * 1000
-const HOURLY_MAX_HOURS = 3 * 24
+const HOUR_MS = 60 * 60 * 1000;
+const HOURLY_MAX_HOURS = 3 * 24;
 
 // Compared in whole hours: a preset's range runs a second past its anchor
 // (see resolveRange), so the 3-day preset is 72h + 1s and must still count
 // as 72h.
 export function chooseGranularity(spanMs: number): Granularity {
-  return Math.floor(spanMs / HOUR_MS) <= HOURLY_MAX_HOURS ? 'hour' : 'day'
+  return Math.floor(spanMs / HOUR_MS) <= HOURLY_MAX_HOURS ? "hour" : "day";
 }
 
 export type PrecipBucket = {
-  start: Date
-  end: Date
-  total: number
+  start: Date;
+  end: Date;
+  total: number;
   // How many hourly readings landed in the bucket, against how many hours
   // the bucket spans — a day with archive gaps under-reports its total,
   // and the tooltip says so rather than passing it off as complete.
-  hoursReported: number
-  hoursInBucket: number
+  hoursReported: number;
+  hoursInBucket: number;
   // Distinct QC flags among the bucket's readings (e.g. 'T' trace,
   // 'E' estimated); empty for clean data.
-  flags: string[]
-}
+  flags: string[];
+};
 
 // Buckets are the viewer's local hours/days: a "day" of rain should run
 // midnight to midnight where the viewer is, not in UTC. Using the Date
 // setters (rather than adding 24h) also makes a DST-change day 23 or 25
 // hours long, as it really is.
 export function bucketStart(date: Date, granularity: Granularity): Date {
-  const start = new Date(date)
-  if (granularity === 'hour') start.setMinutes(0, 0, 0)
-  else start.setHours(0, 0, 0, 0)
-  return start
+  const start = new Date(date);
+  if (granularity === "hour") start.setMinutes(0, 0, 0);
+  else start.setHours(0, 0, 0, 0);
+  return start;
 }
 
 export function bucketEnd(start: Date, granularity: Granularity): Date {
-  const end = new Date(start)
-  if (granularity === 'hour') end.setHours(end.getHours() + 1)
-  else end.setDate(end.getDate() + 1)
-  return end
+  const end = new Date(start);
+  if (granularity === "hour") end.setHours(end.getHours() + 1);
+  else end.setDate(end.getDate() + 1);
+  return end;
 }
 
 // Widens a window out to whole buckets, so the first and last bars cover
@@ -53,27 +53,27 @@ export function bucketEnd(start: Date, granularity: Granularity): Date {
 // to start or end in — a partial bucket would both under-report its total
 // and sit half outside the axis.
 export function snapToBuckets(window: [Date, Date], granularity: Granularity): [Date, Date] {
-  const lastStart = bucketStart(new Date(window[1].getTime() - 1), granularity)
-  return [bucketStart(window[0], granularity), bucketEnd(lastStart, granularity)]
+  const lastStart = bucketStart(new Date(window[1].getTime() - 1), granularity);
+  return [bucketStart(window[0], granularity), bucketEnd(lastStart, granularity)];
 }
 
 // Every bucket start in a (snapped) window, dry or not — one band each on
 // the x-axis, so a day with no rain still takes up its day.
 export function bucketStartsIn(window: [Date, Date], granularity: Granularity): Date[] {
-  const starts: Date[] = []
+  const starts: Date[] = [];
   for (let t = bucketStart(window[0], granularity); t < window[1]; t = bucketEnd(t, granularity)) {
-    starts.push(t)
+    starts.push(t);
   }
-  return starts
+  return starts;
 }
 
 export function bucketPrecip(readings: Reading[], granularity: Granularity): PrecipBucket[] {
-  const buckets = new Map<number, PrecipBucket>()
+  const buckets = new Map<number, PrecipBucket>();
   for (const r of readings) {
-    const start = bucketStart(new Date(r.recorded_at), granularity)
-    let bucket = buckets.get(start.getTime())
+    const start = bucketStart(new Date(r.recorded_at), granularity);
+    let bucket = buckets.get(start.getTime());
     if (!bucket) {
-      const end = bucketEnd(start, granularity)
+      const end = bucketEnd(start, granularity);
       bucket = {
         start,
         end,
@@ -81,34 +81,34 @@ export function bucketPrecip(readings: Reading[], granularity: Granularity): Pre
         hoursReported: 0,
         hoursInBucket: Math.round((end.getTime() - start.getTime()) / HOUR_MS),
         flags: [],
-      }
-      buckets.set(start.getTime(), bucket)
+      };
+      buckets.set(start.getTime(), bucket);
     }
-    bucket.total += r.value
-    bucket.hoursReported += 1
-    if (r.quality_flag && !bucket.flags.includes(r.quality_flag)) bucket.flags.push(r.quality_flag)
+    bucket.total += r.value;
+    bucket.hoursReported += 1;
+    if (r.quality_flag && !bucket.flags.includes(r.quality_flag)) bucket.flags.push(r.quality_flag);
   }
-  return [...buckets.values()].sort((a, b) => a.start.getTime() - b.start.getTime())
+  return [...buckets.values()].sort((a, b) => a.start.getTime() - b.start.getTime());
 }
 
 export function totalOf(buckets: PrecipBucket[]): number {
-  return buckets.reduce((sum, b) => sum + b.total, 0)
+  return buckets.reduce((sum, b) => sum + b.total, 0);
 }
 
 // The end of the last archived hour, given that hour's recorded_at:
 // everything after it is "not yet archived" (the archive lags by about a
 // day), which is different from "no rain" and is drawn differently.
 export function archivedThrough(lastRecordedAt: string): Date {
-  return new Date(new Date(lastRecordedAt).getTime() + HOUR_MS)
+  return new Date(new Date(lastRecordedAt).getTime() + HOUR_MS);
 }
 
-const FLAG_NAMES: Record<string, string> = { T: 'trace', E: 'estimated' }
+const FLAG_NAMES: Record<string, string> = { T: "trace", E: "estimated" };
 
 export function describeFlags(flags: string[]): string | null {
-  if (flags.length === 0) return null
-  return flags.map((f) => FLAG_NAMES[f] ?? f).join(', ')
+  if (flags.length === 0) return null;
+  return flags.map((f) => FLAG_NAMES[f] ?? f).join(", ");
 }
 
 export function formatMm(value: number): string {
-  return `${(Math.round(value * 10) / 10).toFixed(1)} mm`
+  return `${(Math.round(value * 10) / 10).toFixed(1)} mm`;
 }

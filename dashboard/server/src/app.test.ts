@@ -102,14 +102,20 @@ describe("app routes", () => {
       const res = await request(createApp(tmpDir)).get("/api/readings?metric=temperature");
       expect(res.status).toBe(200);
       expect(seriesKeys(res.body)).toEqual(["dev1/temperature", "dev2/temperature"]);
-      expect(res.body.series[0].readings.map((r: { value: number }) => r.value)).toEqual([5.0, 5.5, 6.0]);
+      expect(res.body.series[0].readings.map((r: { value: number }) => r.value)).toEqual([
+        5.0, 5.5, 6.0,
+      ]);
     });
 
     it("accepts a repeated metric param for a combined panel", async () => {
       const res = await request(createApp(tmpDir)).get(
         "/api/readings?metric=temperature&metric=dewpoint",
       );
-      expect(seriesKeys(res.body)).toEqual(["dev1/dewpoint", "dev1/temperature", "dev2/temperature"]);
+      expect(seriesKeys(res.body)).toEqual([
+        "dev1/dewpoint",
+        "dev1/temperature",
+        "dev2/temperature",
+      ]);
     });
 
     it("narrows to one device with device_id, which can also reach a fake-* device", async () => {
@@ -161,9 +167,7 @@ describe("app routes", () => {
       },
     ]);
 
-    const readingsRes = await request(app).get(
-      "/api/readings?device_id=dev1&metric=temperature",
-    );
+    const readingsRes = await request(app).get("/api/readings?device_id=dev1&metric=temperature");
     expect(readingsRes.status).toBe(200);
     expect(readingsRes.body.series).toEqual([
       {

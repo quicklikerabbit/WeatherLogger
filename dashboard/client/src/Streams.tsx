@@ -1,26 +1,27 @@
-import { ParentSize } from '@visx/responsive'
-import { useEffect, useState } from 'react'
-import { fetchJson } from './api'
-import { deviceLocation } from './deviceInfo'
-import { LineChart, type Reading, toPoints } from './LineChart'
-import { metricMark, prettifyMetric } from './metrics'
-import type { ReadingSeries } from './Overview'
-import type { DeviceColors } from './seriesColors'
-import { rangeQueryParams, type ResolvedRange } from './timeRange'
+import { ParentSize } from "@visx/responsive";
+import { useEffect, useState } from "react";
+import { fetchJson } from "./api";
+import { deviceLocation } from "./deviceInfo";
+import { LineChart } from "./LineChart";
+import { type Reading, toPoints } from "./lineSeries";
+import { metricMark, prettifyMetric } from "./metrics";
+import type { ReadingSeries } from "./panelData";
+import type { DeviceColors } from "./seriesColors";
+import { rangeQueryParams, type ResolvedRange } from "./timeRange";
 
 export type SeriesInfo = {
-  device_id: string
-  metric: string
-  count: number
-  first_recorded_at: string
-  last_recorded_at: string
+  device_id: string;
+  metric: string;
+  count: number;
+  first_recorded_at: string;
+  last_recorded_at: string;
+};
+
+function seriesKey(s: Pick<SeriesInfo, "device_id" | "metric">) {
+  return `${s.device_id}::${s.metric}`;
 }
 
-export function seriesKey(s: Pick<SeriesInfo, 'device_id' | 'metric'>) {
-  return `${s.device_id}::${s.metric}`
-}
-
-const dateFormat = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
 
 // One device/metric stream at a time, for troubleshooting a single feed —
 // the overview's per-measurement panels are the main way to read the data.
@@ -29,31 +30,31 @@ export function Streams({
   range,
   colorFor,
 }: {
-  series: SeriesInfo[]
-  range: ResolvedRange
-  colorFor: DeviceColors
+  series: SeriesInfo[];
+  range: ResolvedRange;
+  colorFor: DeviceColors;
 }) {
-  const [selected, setSelected] = useState<string>(() => (series[0] ? seriesKey(series[0]) : ''))
-  const [readings, setReadings] = useState<Reading[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string>(() => (series[0] ? seriesKey(series[0]) : ""));
+  const [readings, setReadings] = useState<Reading[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!selected) return
-    const controller = new AbortController()
-    const [device_id, metric] = selected.split('::')
-    const params = new URLSearchParams({ device_id, metric, ...rangeQueryParams(range) })
-    setError(null)
+    if (!selected) return;
+    const controller = new AbortController();
+    const [device_id, metric] = selected.split("::");
+    const params = new URLSearchParams({ device_id, metric, ...rangeQueryParams(range) });
+    setError(null);
     fetchJson<{ series: ReadingSeries[] }>(`/api/readings?${params}`, { signal: controller.signal })
       .then((data) => setReadings(data.series[0]?.readings ?? []))
       .catch((err) => {
-        if (err.name === 'AbortError') return
-        setError(String(err))
-      })
-    return () => controller.abort()
-  }, [selected, range])
+        if (err.name === "AbortError") return;
+        setError(String(err));
+      });
+    return () => controller.abort();
+  }, [selected, range]);
 
-  const [deviceId, metric] = selected ? selected.split('::') : ['', '']
-  const info = series.find((s) => seriesKey(s) === selected)
+  const [deviceId, metric] = selected ? selected.split("::") : ["", ""];
+  const info = series.find((s) => seriesKey(s) === selected);
 
   return (
     <div>
@@ -65,19 +66,19 @@ export function Streams({
           onChange={(e) => setSelected(e.target.value)}
         >
           {series.map((s) => {
-            const location = deviceLocation(s.device_id)
+            const location = deviceLocation(s.device_id);
             return (
               <option key={seriesKey(s)} value={seriesKey(s)}>
                 {s.device_id} / {s.metric} ({s.count} readings)
-                {location ? ` — ${location}` : ''}
+                {location ? ` — ${location}` : ""}
               </option>
-            )
+            );
           })}
         </select>
       </label>
       {info && (
         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          {info.count} readings in total, {dateFormat.format(new Date(info.first_recorded_at))} –{' '}
+          {info.count} readings in total, {dateFormat.format(new Date(info.first_recorded_at))} –{" "}
           {dateFormat.format(new Date(info.last_recorded_at))}
         </p>
       )}
@@ -94,7 +95,7 @@ export function Streams({
                   color: colorFor(deviceId),
                   // Gusts and other sparse metrics keep their dots here too,
                   // so a stream looks the same as it does in its panel.
-                  mark: metricMark(metric) === 'dots' ? 'dots' : 'line',
+                  mark: metricMark(metric) === "dots" ? "dots" : "line",
                   points: toPoints(readings),
                 },
               ]}
@@ -107,5 +108,5 @@ export function Streams({
         </ParentSize>
       </div>
     </div>
-  )
+  );
 }
