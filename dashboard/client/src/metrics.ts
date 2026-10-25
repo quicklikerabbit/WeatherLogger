@@ -31,22 +31,63 @@ export type MetricConfig = {
   // max itself. A step that evenly divides the range (90, one per compass
   // point) guarantees a tick lands exactly on it.
   tickStep?: number
+  // How this metric is drawn when it shares an overview panel with another
+  // (see PANELS). Color already identifies the device, so line style is
+  // what tells, say, temperature from dewpoint apart. 'dots' is for a
+  // metric reported only intermittently (wind gusts) — a line through
+  // sparse points would invent values for the gaps between them.
+  mark?: SeriesMark
 }
+
+export type SeriesMark = 'line' | 'dashed' | 'dots' | 'bar'
 
 const DEFAULT_START_AT_ZERO = true
 
 export const METRICS: Record<string, MetricConfig> = {
   temperature: { unit: '°C' },
-  dewpoint: { unit: '°C' },
+  dewpoint: { unit: '°C', mark: 'dashed' },
   humidity: { unit: '%' },
   pressure: { unit: 'hPa', startAtZero: false },
   visibility: { unit: 'km' },
   wind_speed: { unit: 'km/h' },
-  wind_gust: { unit: 'km/h' },
+  wind_gust: { unit: 'km/h', mark: 'dots' },
   wind_bearing: { unit: '°', initialMax: 360, firmMax: true, tickStep: 90 },
   pm25: { unit: 'µg/m³', label: 'PM2.5' },
-  pm10: { unit: 'µg/m³', label: 'PM10' },
+  pm10: { unit: 'µg/m³', label: 'PM10', mark: 'dashed' },
   precipitation_mm: { unit: 'mm', label: 'Precipitation' },
+}
+
+// The overview's panels — one per measurement type, each drawing every
+// device's stream for its metrics on one chart. Metrics grouped into a
+// panel must share a unit, since a panel has one y-axis; the first metric
+// drives the axis's scale config (startAtZero etc.). A panel only appears
+// once at least one of its metrics has data. `kind` picks the chart form:
+// precipitation is an accumulation, so it's bars of totals per hour/day
+// rather than a line through instantaneous values.
+export type PanelConfig = {
+  id: string
+  title: string
+  metrics: string[]
+  kind?: 'line' | 'precip'
+}
+
+export const PANELS: PanelConfig[] = [
+  { id: 'temperature', title: 'Temperature', metrics: ['temperature', 'dewpoint'] },
+  { id: 'precipitation', title: 'Precipitation', metrics: ['precipitation_mm'], kind: 'precip' },
+  { id: 'humidity', title: 'Humidity', metrics: ['humidity'] },
+  { id: 'pressure', title: 'Pressure', metrics: ['pressure'] },
+  { id: 'wind', title: 'Wind speed', metrics: ['wind_speed', 'wind_gust'] },
+  { id: 'visibility', title: 'Visibility', metrics: ['visibility'] },
+  { id: 'air_quality', title: 'Air quality', metrics: ['pm25', 'pm10'] },
+]
+
+export function metricMark(metric: string): SeriesMark {
+  return METRICS[metric]?.mark ?? 'line'
+}
+
+export function panelAxisLabel(panel: PanelConfig): string {
+  const unit = metricUnit(panel.metrics[0])
+  return unit ? `${panel.title} (${unit})` : panel.title
 }
 
 export function metricStartAtZero(metric: string): boolean {
@@ -69,7 +110,7 @@ export function metricUnit(metric: string): string | undefined {
   return METRICS[metric]?.unit
 }
 
-function prettifyMetric(metric: string): string {
+export function prettifyMetric(metric: string): string {
   if (METRICS[metric]?.label) return METRICS[metric].label!
   return metric
     .split('_')

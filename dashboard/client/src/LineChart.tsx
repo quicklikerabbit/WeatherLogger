@@ -3,7 +3,7 @@ import { GridRows } from '@visx/grid'
 import { scaleLinear, scaleTime } from '@visx/scale'
 import { LinePath } from '@visx/shape'
 import { TooltipWithBounds, useTooltip } from '@visx/tooltip'
-import { bisector, extent, max, min } from 'd3-array'
+import { bisector, extent, max, median, min } from 'd3-array'
 import { useRef } from 'react'
 import {
   metricFirmMax,
@@ -11,12 +11,28 @@ import {
   metricStartAtZero,
   metricTickStep,
   metricUnit,
+  type SeriesMark,
   yAxisLabel,
 } from './metrics'
 
-export type Reading = { recorded_at: string; value: number }
+export type Reading = { recorded_at: string; value: number; quality_flag?: string | null }
 
 export type Point = { date: Date; value: number }
+
+// One line (or set of dots) on the chart. `label` names it in the tooltip
+// when the chart has more than one series; the legend lives with whatever
+// renders the chart (see Overview.tsx), since a lone series needs none.
+export type ChartSeries = {
+  key: string
+  label: string
+  color: string
+  mark: SeriesMark
+  points: Point[]
+}
+
+export function toPoints(readings: Reading[]): Point[] {
+  return readings.map((r) => ({ date: new Date(r.recorded_at), value: r.value }))
+}
 
 // Exported so tests can translate a target data point into the client
 // coordinates a real pointer event would carry, without duplicating this
@@ -45,17 +61,81 @@ export function findClosestPoint(points: Point[], x0: Date): Point {
   return points[bisectDate(points, x0)]
 }
 
+// How far apart two consecutive readings can be before the line between
+// them is broken: three of the series' own typical intervals. Relative to
+// the series rather than a fixed duration, so an hourly EC feed and a
+// sensor reporting every few seconds both break only at genuine outages.
+export function gapThresholdMs(points: Point[]): number {
+  if (points.length < 2) return Infinity
+  const intervals = points.slice(1).map((p, i) => p.date.getTime() - points[i].date.getTime())
+  return 3 * (median(intervals) ?? 0)
+}
+
+// Splits a series into runs with no gap wider than gapThresholdMs, so a
+// line is drawn within each run but never straight across missing data —
+// which would otherwise look like a measured, smoothly-changing value.
+export function splitAtGaps(points: Point[]): Point[][] {
+  if (points.length === 0) return []
+  const threshold = gapThresholdMs(points)
+  const runs: Point[][] = [[points[0]]]
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].date.getTime() - points[i - 1].date.getTime() > threshold) runs.push([])
+    runs[runs.length - 1].push(points[i])
+  }
+  return runs
+}
+
+type TooltipRow = { key: string; label: string; color: string; point: Point }
+type TooltipData = { date: Date; rows: TooltipRow[] }
+
+// The hovered moment snaps to whichever series has a reading nearest the
+// pointer; every other series then reports its own reading closest to
+// that moment — but only if it's within that series' gap threshold, so a
+// series with nothing nearby is left out rather than showing a stale value.
+export function tooltipAt(series: ChartSeries[], x0: Date): TooltipData | null {
+  const candidates = series
+    .filter((s) => s.points.length > 0)
+    .map((s) => ({ s, point: findClosestPoint(s.points, x0) }))
+  if (candidates.length === 0) return null
+
+  const anchor = candidates.reduce((best, c) =>
+    Math.abs(c.point.date.getTime() - x0.getTime()) <
+    Math.abs(best.point.date.getTime() - x0.getTime())
+      ? c
+      : best,
+  ).point.date
+
+  const rows: TooltipRow[] = []
+  for (const { s } of candidates) {
+    const point = findClosestPoint(s.points, anchor)
+    const tolerance = Math.min(gapThresholdMs(s.points), 90 * 60 * 1000)
+    if (Math.abs(point.date.getTime() - anchor.getTime()) <= tolerance) {
+      rows.push({ key: s.key, label: s.label, color: s.color, point })
+    }
+  }
+  return { date: anchor, rows }
+}
+
+function formatValue(value: number, unit: string | undefined) {
+  return `${Math.round(value * 10) / 10}${unit ? ` ${unit}` : ''}`
+}
+
 export function LineChart({
-  readings,
+  series,
   width,
   height,
   metric,
+  yLabel,
   xDomain,
 }: {
-  readings: Reading[]
+  series: ChartSeries[]
   width: number
   height: number
+  // Drives the y-axis scale config (startAtZero, initialMax...) and unit;
+  // for a multi-metric panel, its first metric.
   metric?: string
+  // Overrides the y-axis label derived from `metric`.
+  yLabel?: string
   // The selected time window. When given, the axis spans the whole window
   // instead of shrinking to the data's extent, so a gap at either end
   // (e.g. precipitation's archive lag) shows as a gap.
@@ -64,32 +144,28 @@ export function LineChart({
   // Hooks must run unconditionally, ahead of the early returns below.
   const svgRef = useRef<SVGSVGElement>(null)
   const { tooltipData, tooltipLeft, tooltipTop, tooltipOpen, showTooltip, hideTooltip } =
-    useTooltip<Point>()
+    useTooltip<TooltipData>()
 
   if (width === 0 || height === 0) return null
 
   const innerWidth = width - margin.left - margin.right
   const innerHeight = height - margin.top - margin.bottom
 
-  const parsed: Point[] = readings.map((r) => ({
-    date: new Date(r.recorded_at),
-    value: r.value,
-  }))
-
-  if (parsed.length === 0) {
-    return <p>No readings for this selection.</p>
+  const allPoints = series.flatMap((s) => s.points)
+  if (allPoints.length === 0) {
+    return <p className="text-sm text-gray-500 dark:text-gray-400">No readings in this range.</p>
   }
 
   const xScale = scaleTime({
-    domain: xDomain ?? computeXDomain(parsed.map((d) => d.date)),
+    domain: xDomain ?? computeXDomain(allPoints.map((d) => d.date)),
     range: [0, innerWidth],
   })
 
   // Anchoring the domain at 0 keeps the axis from exaggerating small
   // fluctuations by auto-scaling to the data's tight range — but not every
   // metric wants that (see metrics.ts for exceptions like pressure).
-  const dataMin = min(parsed, (d) => d.value) ?? 0
-  const dataMax = max(parsed, (d) => d.value) ?? 1
+  const dataMin = min(allPoints, (d) => d.value) ?? 0
+  const dataMax = max(allPoints, (d) => d.value) ?? 1
   const startAtZero = metric ? metricStartAtZero(metric) : true
   const initialMax = metric ? metricInitialMax(metric) : undefined
   const domainMax = initialMax !== undefined ? Math.max(dataMax, initialMax) : dataMax
@@ -117,6 +193,7 @@ export function LineChart({
     : undefined
 
   const unit = metric ? metricUnit(metric) : undefined
+  const multiSeries = series.length > 1
 
   function handlePointerMove(
     event: React.MouseEvent<SVGRectElement> | React.TouchEvent<SVGRectElement>,
@@ -125,14 +202,22 @@ export function LineChart({
     const source = 'touches' in event ? event.touches[0] : event
     if (!svg || !source) return
 
-    const { left } = svg.getBoundingClientRect()
+    const { left, top } = svg.getBoundingClientRect()
     const x = source.clientX - left - margin.left
-    const closest = findClosestPoint(parsed, xScale.invert(x))
+    const data = tooltipAt(series, xScale.invert(x))
+    if (!data || data.rows.length === 0) {
+      hideTooltip()
+      return
+    }
 
     showTooltip({
-      tooltipData: closest,
-      tooltipLeft: xScale(closest.date) + margin.left,
-      tooltipTop: yScale(closest.value) + margin.top,
+      tooltipData: data,
+      tooltipLeft: xScale(data.date) + margin.left,
+      // A lone series anchors the tooltip to its point; several share one
+      // tooltip, so it follows the pointer instead of any one line.
+      tooltipTop: multiSeries
+        ? source.clientY - top
+        : yScale(data.rows[0].point.value) + margin.top,
     })
   }
 
@@ -147,20 +232,53 @@ export function LineChart({
             stroke="currentColor"
             strokeOpacity={0.15}
           />
-          <LinePath
-            data={parsed}
-            x={(d) => xScale(d.date) ?? 0}
-            y={(d) => yScale(d.value) ?? 0}
-            stroke="#2563eb"
-            strokeWidth={2}
-          />
+          {series.map((s) => (
+            <g key={s.key} data-testid={`series-${s.key}`}>
+              {s.mark === 'dots'
+                ? s.points.map((p) => (
+                    <circle
+                      key={p.date.getTime()}
+                      cx={xScale(p.date)}
+                      cy={yScale(p.value)}
+                      r={4}
+                      style={{ fill: s.color, stroke: 'var(--chart-surface)' }}
+                      strokeWidth={2}
+                    />
+                  ))
+                : splitAtGaps(s.points).map((run) =>
+                    // A run of one has no neighbor to draw a line to; a dot
+                    // keeps an isolated reading visible instead of dropping it.
+                    run.length === 1 ? (
+                      <circle
+                        key={run[0].date.getTime()}
+                        cx={xScale(run[0].date)}
+                        cy={yScale(run[0].value)}
+                        r={2.5}
+                        style={{ fill: s.color }}
+                      />
+                    ) : (
+                      <LinePath
+                        key={run[0].date.getTime()}
+                        data={run}
+                        x={(d) => xScale(d.date) ?? 0}
+                        y={(d) => yScale(d.value) ?? 0}
+                        style={{ stroke: s.color }}
+                        strokeWidth={2}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                        strokeDasharray={s.mark === 'dashed' ? '6,4' : undefined}
+                      />
+                    ),
+                  )}
+            </g>
+          ))}
           <AxisLeft
             scale={yScale}
             stroke="currentColor"
             tickStroke="currentColor"
             tickValues={tickValues}
             tickLabelProps={() => ({ fill: 'currentColor', fontSize: 11, dx: '-2em' })}
-            label={metric ? yAxisLabel(metric) : undefined}
+            label={yLabel ?? (metric ? yAxisLabel(metric) : undefined)}
             labelProps={{ fill: 'currentColor', fontSize: 12, textAnchor: 'middle' }}
             labelOffset={36}
           />
@@ -184,16 +302,17 @@ export function LineChart({
                 y2={innerHeight}
                 stroke="currentColor"
                 strokeOpacity={0.3}
-                strokeDasharray="4,2"
               />
-              <circle
-                cx={xScale(tooltipData.date)}
-                cy={yScale(tooltipData.value)}
-                r={4}
-                fill="#2563eb"
-                stroke="white"
-                strokeWidth={1.5}
-              />
+              {tooltipData.rows.map((row) => (
+                <circle
+                  key={row.key}
+                  cx={xScale(row.point.date)}
+                  cy={yScale(row.point.value)}
+                  r={4}
+                  style={{ fill: row.color, stroke: 'var(--chart-surface)' }}
+                  strokeWidth={2}
+                />
+              ))}
             </g>
           )}
           {/* Transparent hit-target for the tooltip, on top so it always
@@ -223,10 +342,23 @@ export function LineChart({
           applyPositionStyle
           className="pointer-events-none rounded border border-gray-300 bg-white px-2 py-1 text-xs whitespace-nowrap text-gray-700 shadow dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
         >
-          <div data-testid="tooltip-value" className="font-medium">
-            {Math.round(tooltipData.value * 10) / 10}
-            {unit ? ` ${unit}` : ''}
-          </div>
+          {tooltipData.rows.map((row) => (
+            <div key={row.key} className="flex items-center gap-1.5">
+              {multiSeries && (
+                <>
+                  <span
+                    aria-hidden
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ background: row.color }}
+                  />
+                  <span>{row.label}</span>
+                </>
+              )}
+              <span data-testid="tooltip-value" className="font-medium">
+                {formatValue(row.point.value, unit)}
+              </span>
+            </div>
+          ))}
           <div className="text-gray-500 dark:text-gray-400">{dateFormat.format(tooltipData.date)}</div>
         </TooltipWithBounds>
       )}
