@@ -23,6 +23,8 @@ import {
 import { PrecipChart, type PrecipSeries } from './PrecipChart'
 import type { DeviceColors } from './seriesColors'
 import { rangeQueryParams, type ResolvedRange } from './timeRange'
+import { binWind, pairWind, SPEED_BANDS } from './windRose'
+import { WindRoseChart } from './WindRoseChart'
 
 export type ReadingSeries = {
   device_id: string
@@ -181,6 +183,50 @@ function Panel({
             </ParentSize>
           ) : (
             <p className="text-sm text-gray-500 dark:text-gray-400">No readings in this range.</p>
+          ))}
+      </PanelShell>
+    )
+  }
+
+  if (panel.kind === 'wind_rose') {
+    // One rose per device: frequencies from different stations don't add
+    // up to anything meaningful when stacked together.
+    const roses = data
+      ? [...pairWind(data)].sort(([a], [b]) => a.localeCompare(b)).map(([device, obs]) => ({
+          device,
+          rose: binWind(obs),
+        }))
+      : []
+    const observations = roses.reduce((sum, r) => sum + r.rose.total, 0)
+    return (
+      <PanelShell
+        panel={panel}
+        aside={
+          data && (
+            <p className="text-right text-xs text-gray-500 dark:text-gray-400">
+              {observations} observations · center: % calm
+            </p>
+          )
+        }
+        legend={SPEED_BANDS.map((b) => ({ key: b.label, label: b.label, color: b.color, mark: 'bar' as const }))}
+        error={error}
+      >
+        {data &&
+          (roses.length === 0 ? (
+            <p className="text-sm text-gray-500 dark:text-gray-400">No readings in this range.</p>
+          ) : (
+            <div className="flex h-full gap-4">
+              {roses.map(({ device, rose }) => (
+                <div key={device} className="flex min-w-0 flex-1 flex-col">
+                  {roses.length > 1 && <p className="text-center text-xs">{device}</p>}
+                  <div className="min-h-0 flex-1">
+                    <ParentSize>
+                      {({ width, height }) => <WindRoseChart data={rose} width={width} height={height} />}
+                    </ParentSize>
+                  </div>
+                </div>
+              ))}
+            </div>
           ))}
       </PanelShell>
     )

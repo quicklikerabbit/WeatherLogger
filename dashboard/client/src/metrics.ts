@@ -63,12 +63,14 @@ export const METRICS: Record<string, MetricConfig> = {
 // drives the axis's scale config (startAtZero etc.). A panel only appears
 // once at least one of its metrics has data. `kind` picks the chart form:
 // precipitation is an accumulation, so it's bars of totals per hour/day
-// rather than a line through instantaneous values.
+// rather than a line through instantaneous values; wind direction is a
+// rose of how often each bearing occurred, which needs both bearing and
+// speed.
 export type PanelConfig = {
   id: string
   title: string
   metrics: string[]
-  kind?: 'line' | 'precip'
+  kind?: 'line' | 'precip' | 'wind_rose'
 }
 
 export const PANELS: PanelConfig[] = [
@@ -77,6 +79,7 @@ export const PANELS: PanelConfig[] = [
   { id: 'humidity', title: 'Humidity', metrics: ['humidity'] },
   { id: 'pressure', title: 'Pressure', metrics: ['pressure'] },
   { id: 'wind', title: 'Wind speed', metrics: ['wind_speed', 'wind_gust'] },
+  { id: 'wind_direction', title: 'Wind direction', metrics: ['wind_bearing', 'wind_speed'], kind: 'wind_rose' },
   { id: 'visibility', title: 'Visibility', metrics: ['visibility'] },
   { id: 'air_quality', title: 'Air quality', metrics: ['pm25', 'pm10'] },
 ]
