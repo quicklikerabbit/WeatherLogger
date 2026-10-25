@@ -336,22 +336,42 @@ def fetch_climate_hourly():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     results = []
     for feature in features:
-        props = feature.get("properties", {})
-        recorded_at = _normalize_iso(props.get("UTC_DATE"))
-        amount_mm = props.get("PRECIP_AMOUNT")
-        if not recorded_at or not isinstance(amount_mm, (int, float)) or isinstance(amount_mm, bool):
+        result = parse_climate_hour(feature)
+        if result is None:
             continue
-        if _seconds_between(recorded_at, now) > CLIMATE_HOURLY_MAX_AGE_SECONDS:
+        if _seconds_between(result["ts"], now) > CLIMATE_HOURLY_MAX_AGE_SECONDS:
             continue
-
-        result = {"ts": recorded_at, "precipitation_mm": float(amount_mm)}
-        flag = props.get("PRECIP_AMOUNT_FLAG")
-        if isinstance(flag, str) and flag:
-            result["quality_flag"] = flag
         results.append(result)
 
     results.sort(key=lambda r: r["ts"])
     return results
+
+
+def parse_climate_hour(feature):
+    """One climate-hourly GeoJSON feature -> {"ts", "precipitation_mm",
+    "quality_flag"?}, or None if it has no usable timestamp or amount.
+    Shared with backfill_precip.py so the live poll and a backfill can't
+    disagree about what a valid hour looks like."""
+    props = feature.get("properties", {})
+    recorded_at = _normalize_iso(props.get("UTC_DATE"))
+    amount_mm = props.get("PRECIP_AMOUNT")
+    if not recorded_at or not isinstance(amount_mm, (int, float)) or isinstance(amount_mm, bool):
+        return None
+
+    result = {"ts": recorded_at, "precipitation_mm": float(amount_mm)}
+    flag = props.get("PRECIP_AMOUNT_FLAG")
+    if isinstance(flag, str) and flag:
+        result["quality_flag"] = flag
+    return result
+
+
+def precip_reading_payload(hour):
+    """A parse_climate_hour() result -> the reading payload logger.py
+    expects, with the QC flag riding along as precipitation_mm_flag."""
+    payload = {"ts": hour["ts"], "precipitation_mm": hour["precipitation_mm"]}
+    if "quality_flag" in hour:
+        payload["precipitation_mm_flag"] = hour["quality_flag"]
+    return payload
 
 
 # ---------------- MQTT publishing ----------------
@@ -400,9 +420,7 @@ class ECPublisher:
         climate_hours = _best_effort("climate-hourly", fetch_climate_hourly)
         if climate_hours:
             for climate in climate_hours:
-                precip_reading = {"ts": climate["ts"], "precipitation_mm": climate["precipitation_mm"]}
-                if "quality_flag" in climate:
-                    precip_reading["precipitation_mm_flag"] = climate["quality_flag"]
+                precip_reading = precip_reading_payload(climate)
                 self.client.publish(TOPIC_READING, json.dumps(precip_reading), qos=1, retain=False)
             print(f"  {TOPIC_READING}  {len(climate_hours)} climate-hourly precipitation hour(s), "
                   f"{climate_hours[0]['ts']} .. {climate_hours[-1]['ts']}")
