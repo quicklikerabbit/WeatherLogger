@@ -56,6 +56,22 @@ describe('toPrecipView', () => {
     expect(toPrecipView(data, colorFor, long, null).granularity).toBe('day')
   })
 
+  it('keeps the bucket size chosen from the selected range, not the widened fetch window', () => {
+    // Regression: a 3-day preset starts mid-hour, so snapping it to whole
+    // hours widens it just past 72h. Re-picking the size from that widened
+    // window flipped it to daily bars over an hour-snapped fetch, bringing
+    // back partial first/last days that overflowed the axis.
+    const anchor = new Date('2024-01-10T06:42:00Z')
+    const selected = { from: new Date(anchor.getTime() - 3 * day), to: new Date(anchor.getTime() + 1000) }
+    const widened: [Date, Date] = [
+      new Date('2024-01-07T06:00:00Z'),
+      new Date('2024-01-10T07:00:00Z'),
+    ]
+    expect(widened[1].getTime() - widened[0].getTime()).toBeGreaterThan(3 * day)
+
+    expect(toPrecipView(data, colorFor, widened, null, selected).granularity).toBe('hour')
+  })
+
   it('takes "archived through" from the snapshot-wide latest, not the window', () => {
     const view = toPrecipView([], colorFor, undefined, '2024-01-05T06:00:00Z')
     expect(view.through?.toISOString()).toBe('2024-01-05T07:00:00.000Z')

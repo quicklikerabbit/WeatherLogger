@@ -1,5 +1,13 @@
+import {
+  CircleShape,
+  LegendOrdinal,
+  LineShape,
+  RectShape,
+  type RenderShapeProvidedProps,
+} from '@visx/legend'
 import { ParentSize } from '@visx/responsive'
-import { useEffect, useState } from 'react'
+import { scaleOrdinal } from '@visx/scale'
+import { useEffect, useMemo, useState } from 'react'
 import { fetchJson } from './api'
 import { type ChartSeries, LineChart, type Reading, toPoints } from './LineChart'
 import { metricMark, PANELS, type PanelConfig, panelAxisLabel, prettifyMetric } from './metrics'
@@ -9,6 +17,7 @@ import {
   chooseGranularity,
   formatMm,
   type Granularity,
+  snapToBuckets,
   totalOf,
 } from './precip'
 import { PrecipChart, type PrecipSeries } from './PrecipChart'
@@ -58,49 +67,46 @@ export function toChartSeries(
 
 type LegendEntry = Pick<ChartSeries, 'key' | 'label' | 'color' | 'mark'>
 
-function LegendKey({ series }: { series: LegendEntry }) {
-  if (series.mark === 'bar') {
-    return (
-      <svg width={10} height={10} aria-hidden>
-        <rect width={10} height={10} rx={2} style={{ fill: series.color }} />
-      </svg>
-    )
-  }
-  if (series.mark === 'dots') {
-    return (
-      <svg width={16} height={10} aria-hidden>
-        <circle cx={8} cy={5} r={4} style={{ fill: series.color }} />
-      </svg>
-    )
-  }
-  return (
-    <svg width={20} height={10} aria-hidden>
-      <line
-        x1={1}
-        x2={19}
-        y1={5}
-        y2={5}
-        style={{ stroke: series.color }}
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeDasharray={series.mark === 'dashed' ? '6,4' : undefined}
-      />
-    </svg>
-  )
+// Series colors are CSS variables, which visx's shapes would put in a
+// fill/stroke *attribute* where they don't resolve — so the color goes in
+// via shapeStyle (a style property, where they do), along with the dash.
+function legendShapeStyle(entry: LegendEntry | undefined): React.CSSProperties {
+  if (!entry) return {}
+  if (entry.mark === 'bar' || entry.mark === 'dots') return { fill: entry.color, background: entry.color }
+  return { stroke: entry.color, strokeDasharray: entry.mark === 'dashed' ? '6,4' : undefined }
 }
 
 export function Legend({ series }: { series: LegendEntry[] }) {
   // A lone series is already named by the panel title.
   if (series.length < 2) return null
+  const byKey = new Map(series.map((s) => [s.key, s]))
+  const scale = scaleOrdinal({ domain: series.map((s) => s.key), range: series.map((s) => s.color) })
+
+  // Each series' key matches how it's drawn: a line (solid or dashed) for
+  // a line, a dot for intermittent dots, a swatch for bars.
+  function Shape(props: RenderShapeProvidedProps<string, string>) {
+    const mark = byKey.get(props.item)?.mark
+    if (mark === 'bar') return <RectShape {...props} width={10} height={10} />
+    if (mark === 'dots') return <CircleShape {...props} width={8} height={8} />
+    return <LineShape {...props} />
+  }
+
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-400">
-      {series.map((s) => (
-        <li key={s.key} className="flex items-center gap-1.5">
-          <LegendKey series={s} />
-          {s.label}
-        </li>
-      ))}
-    </ul>
+    <LegendOrdinal
+      scale={scale}
+      direction="row"
+      shape={Shape}
+      shapeWidth={20}
+      shapeHeight={10}
+      shapeStyle={(label) => legendShapeStyle(byKey.get(label.datum))}
+      labelFormat={(key) => byKey.get(key)?.label ?? key}
+      itemMargin="0 16px 0 0"
+      labelMargin="0 0 0 6px"
+      // No `style` prop: it would replace visx's default ({ display: 'flex' })
+      // rather than merge with it. Wrapping has no prop of its own, so it
+      // goes on className.
+      className="flex-wrap gap-y-1 text-xs text-gray-600 dark:text-gray-400"
+    />
   )
 }
 
@@ -126,9 +132,16 @@ function Panel({
   const [data, setData] = useState<ReadingSeries[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Precipitation fetches whole hours/days (see snapToBuckets) so its
+  // first and last bars are complete; line panels use the range as-is.
+  const fetchRange = useMemo(
+    () => (panel.kind === 'precip' ? snapPrecipRange(range) : range),
+    [panel, range],
+  )
+
   useEffect(() => {
     const controller = new AbortController()
-    const params = new URLSearchParams(rangeQueryParams(range))
+    const params = new URLSearchParams(rangeQueryParams(fetchRange))
     for (const metric of panel.metrics) params.append('metric', metric)
     setError(null)
     fetchJson<{ series: ReadingSeries[] }>(`/api/readings?${params}`, { signal: controller.signal })
@@ -138,12 +151,13 @@ function Panel({
         setError(String(err))
       })
     return () => controller.abort()
-  }, [panel, range])
+  }, [panel, fetchRange])
 
-  const xDomain: [Date, Date] | undefined = range.from && range.to ? [range.from, range.to] : undefined
+  const xDomain: [Date, Date] | undefined =
+    fetchRange.from && fetchRange.to ? [fetchRange.from, fetchRange.to] : undefined
 
   if (panel.kind === 'precip') {
-    const precip = data ? toPrecipView(data, colorFor, xDomain, latest) : null
+    const precip = data ? toPrecipView(data, colorFor, xDomain, latest, range) : null
     return (
       <PanelShell
         panel={panel}
@@ -151,20 +165,23 @@ function Panel({
         legend={precip?.series.map((s) => ({ ...s, mark: 'bar' as const })) ?? []}
         error={error}
       >
-        {precip && (
-          <ParentSize>
-            {({ width, height }) => (
-              <PrecipChart
-                series={precip.series}
-                granularity={precip.granularity}
-                width={width}
-                height={height}
-                xDomain={xDomain}
-                through={precip.through}
-              />
-            )}
-          </ParentSize>
-        )}
+        {precip &&
+          (precip.window ? (
+            <ParentSize>
+              {({ width, height }) => (
+                <PrecipChart
+                  series={precip.series}
+                  granularity={precip.granularity}
+                  window={precip.window!}
+                  width={width}
+                  height={height}
+                  through={precip.through}
+                />
+              )}
+            </ParentSize>
+          ) : (
+            <p className="text-sm text-gray-500 dark:text-gray-400">No readings in this range.</p>
+          ))}
       </PanelShell>
     )
   }
@@ -226,20 +243,41 @@ function PanelShell({
 
 // The bucket size follows the window being shown: the selected range if
 // it's bounded, otherwise ("All") the data's own span.
+// The bucket size is picked once, from the selected range, and used both to
+// widen the fetch and to draw — picking it again from the widened window
+// could tip a 72h range just past the hourly limit into daily bars.
+function rangeGranularity(range: ResolvedRange): Granularity | null {
+  return range.from && range.to ? chooseGranularity(range.to.getTime() - range.from.getTime()) : null
+}
+
+function snapPrecipRange(range: ResolvedRange): ResolvedRange {
+  const granularity = rangeGranularity(range)
+  if (!granularity) return range
+  const [from, to] = snapToBuckets([range.from!, range.to!], granularity)
+  return { from, to }
+}
+
+// For a bounded range, `window` is the already-snapped fetch range; for
+// "All" it's undefined and the window comes from the data's own extent.
 export function toPrecipView(
   data: ReadingSeries[],
   colorFor: DeviceColors,
-  xDomain: [Date, Date] | undefined,
+  window: [Date, Date] | undefined,
   latest: string | null,
-): { series: PrecipSeries[]; granularity: Granularity; through: Date | null } {
-  const readings = data.flatMap((s) => s.readings)
-  const times = readings.map((r) => new Date(r.recorded_at).getTime())
-  const spanMs = xDomain
-    ? xDomain[1].getTime() - xDomain[0].getTime()
-    : times.length > 0
-      ? Math.max(...times) - Math.min(...times)
-      : 0
-  const granularity = chooseGranularity(spanMs)
+  selectedRange: ResolvedRange = {},
+): {
+  series: PrecipSeries[]
+  granularity: Granularity
+  window: [Date, Date] | null
+  through: Date | null
+} {
+  const times = data.flatMap((s) => s.readings.map((r) => new Date(r.recorded_at).getTime()))
+  const extent: [Date, Date] | null =
+    times.length > 0 ? [new Date(Math.min(...times)), new Date(Math.max(...times) + 1)] : null
+  const granularity =
+    rangeGranularity(selectedRange) ??
+    chooseGranularity(window ? window[1].getTime() - window[0].getTime() : extent ? extent[1].getTime() - extent[0].getTime() : 0)
+  const snappedWindow = window ?? (extent ? snapToBuckets(extent, granularity) : null)
   const series = [...data]
     .sort((a, b) => a.device_id.localeCompare(b.device_id))
     .map((s) => ({
@@ -248,7 +286,12 @@ export function toPrecipView(
       color: colorFor(s.device_id),
       buckets: bucketPrecip(s.readings, granularity),
     }))
-  return { series, granularity, through: latest ? archivedThrough(latest) : null }
+  return {
+    series,
+    granularity,
+    window: snappedWindow,
+    through: latest ? archivedThrough(latest) : null,
+  }
 }
 
 const throughFormat = new Intl.DateTimeFormat('en-US', {

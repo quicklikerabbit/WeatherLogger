@@ -3,7 +3,9 @@ import type { Reading } from './LineChart'
 import {
   archivedThrough,
   bucketPrecip,
+  bucketStartsIn,
   chooseGranularity,
+  snapToBuckets,
   describeFlags,
   formatMm,
   totalOf,
@@ -21,6 +23,10 @@ describe('chooseGranularity', () => {
     expect(chooseGranularity(24 * hour)).toBe('hour')
     expect(chooseGranularity(72 * hour)).toBe('hour')
     expect(chooseGranularity(73 * hour)).toBe('day')
+  })
+
+  it('treats the 3-day preset (72h plus the one second past its anchor) as hourly', () => {
+    expect(chooseGranularity(72 * hour + 1000)).toBe('hour')
   })
 })
 
@@ -48,6 +54,28 @@ describe('bucketPrecip', () => {
 
   it('totals across buckets', () => {
     expect(totalOf(bucketPrecip([at(15, 1, 1.25), at(17, 1, 2)], 'day'))).toBe(3.25)
+  })
+})
+
+describe('snapToBuckets / bucketStartsIn', () => {
+  it('widens a mid-day window out to whole local days', () => {
+    const snapped = snapToBuckets([new Date(2024, 0, 15, 9, 30), new Date(2024, 0, 17, 14)], 'day')
+    expect(snapped).toEqual([new Date(2024, 0, 15), new Date(2024, 0, 18)])
+    expect(bucketStartsIn(snapped, 'day')).toEqual([
+      new Date(2024, 0, 15),
+      new Date(2024, 0, 16),
+      new Date(2024, 0, 17),
+    ])
+  })
+
+  it('leaves an end already on a bucket boundary alone', () => {
+    const snapped = snapToBuckets([new Date(2024, 0, 15), new Date(2024, 0, 17)], 'day')
+    expect(snapped[1]).toEqual(new Date(2024, 0, 17))
+  })
+
+  it('snaps to whole hours at hourly granularity', () => {
+    const snapped = snapToBuckets([new Date(2024, 0, 15, 9, 30), new Date(2024, 0, 15, 11, 5)], 'hour')
+    expect(snapped).toEqual([new Date(2024, 0, 15, 9), new Date(2024, 0, 15, 12)])
   })
 })
 

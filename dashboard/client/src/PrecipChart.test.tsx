@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { bucketPrecip } from './precip'
-import { barPath, PrecipChart, type PrecipSeries } from './PrecipChart'
+import { PrecipChart, type PrecipSeries } from './PrecipChart'
 
 // See LineChart.test.tsx: without test.globals, cleanup must be registered.
 afterEach(cleanup)
@@ -14,44 +14,52 @@ function seriesOf(readings: ReturnType<typeof reading>[]): PrecipSeries[] {
   return [{ key: 'dev1::precipitation_mm', label: 'dev1', color: 'blue', buckets: bucketPrecip(readings, 'day') }]
 }
 
-const domain: [Date, Date] = [new Date(2024, 0, 10), new Date(2024, 0, 20)]
-
-describe('barPath', () => {
-  it('rounds the top corners and keeps the base square', () => {
-    const d = barPath(0, 10, 20, 50)
-    expect(d.startsWith('M0,60')).toBe(true) // square bottom-left corner on the baseline
-    expect(d).toContain('Q0,10 4,10') // rounded top-left
-  })
-
-  it('shrinks the radius for a bar shorter than it', () => {
-    expect(barPath(0, 58, 20, 2)).toContain('Q0,58 2,58')
-  })
-})
+// Ten whole local days, as snapToBuckets would produce.
+const window: [Date, Date] = [new Date(2024, 0, 10), new Date(2024, 0, 20)]
 
 describe('PrecipChart', () => {
-  it('draws a bar per wet day and none for a dry one', () => {
+  it('gives every day in the window a band, and draws bars only for wet ones', () => {
     render(
       <PrecipChart
         series={seriesOf([reading(12, 1, 2.0), reading(13, 1, 0)])}
         granularity="day"
+        window={window}
         width={500}
         height={300}
-        xDomain={domain}
         through={new Date(2024, 0, 20)}
       />,
     )
+    expect(screen.getAllByTestId('precip-column')).toHaveLength(10)
     expect(screen.getAllByTestId('precip-bar')).toHaveLength(1)
-    expect(screen.getAllByTestId('precip-column')).toHaveLength(2)
   })
 
-  it('shades the window past the archive lag', () => {
+  it('keeps every bar inside the plot area', () => {
+    // Regression: daily buckets used to start at local midnight before an
+    // unsnapped window's start, drawing the first bar over the y-axis.
+    render(
+      <PrecipChart
+        series={seriesOf([reading(10, 0, 3.0), reading(19, 23, 1.0)])}
+        granularity="day"
+        window={window}
+        width={500}
+        height={300}
+        through={new Date(2024, 0, 20)}
+      />,
+    )
+    for (const bar of screen.getAllByTestId('precip-bar')) {
+      const groupX = Number(bar.parentElement!.getAttribute('transform')!.match(/translate\(([-\d.]+)/)![1])
+      expect(groupX + Number(bar.getAttribute('x'))).toBeGreaterThanOrEqual(0)
+    }
+  })
+
+  it('shades the days past the archive lag', () => {
     render(
       <PrecipChart
         series={seriesOf([reading(12, 1, 2.0)])}
         granularity="day"
+        window={window}
         width={500}
         height={300}
-        xDomain={domain}
         through={new Date(2024, 0, 15)}
       />,
     )
@@ -62,10 +70,10 @@ describe('PrecipChart', () => {
     render(
       <PrecipChart
         series={seriesOf([])}
-        granularity="hour"
+        granularity="day"
+        window={window}
         width={500}
         height={300}
-        xDomain={domain}
         through={new Date(2024, 0, 9)}
       />,
     )
@@ -78,9 +86,9 @@ describe('PrecipChart', () => {
       <PrecipChart
         series={seriesOf([])}
         granularity="day"
+        window={window}
         width={500}
         height={300}
-        xDomain={domain}
         through={new Date(2024, 0, 25)}
       />,
     )
@@ -92,13 +100,14 @@ describe('PrecipChart', () => {
       <PrecipChart
         series={seriesOf([reading(12, 1, 1.5, 'T'), reading(12, 2, 0.25)])}
         granularity="day"
+        window={window}
         width={500}
         height={300}
-        xDomain={domain}
         through={new Date(2024, 0, 20)}
       />,
     )
-    fireEvent.mouseMove(screen.getByTestId('precip-column'))
+    // Jan 12 is the third band in the window.
+    fireEvent.mouseMove(screen.getAllByTestId('precip-column')[2])
     expect(screen.getByTestId('precip-tooltip-value').textContent).toBe('1.8 mm')
     expect(screen.getByText('(trace)')).toBeTruthy()
     expect(screen.getByText('2 of 24 h reported')).toBeTruthy()

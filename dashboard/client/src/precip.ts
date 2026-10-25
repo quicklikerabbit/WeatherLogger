@@ -7,10 +7,13 @@ import type { Reading } from './LineChart'
 export type Granularity = 'hour' | 'day'
 
 const HOUR_MS = 60 * 60 * 1000
-const HOURLY_MAX_SPAN_MS = 3 * 24 * HOUR_MS
+const HOURLY_MAX_HOURS = 3 * 24
 
+// Compared in whole hours: a preset's range runs a second past its anchor
+// (see resolveRange), so the 3-day preset is 72h + 1s and must still count
+// as 72h.
 export function chooseGranularity(spanMs: number): Granularity {
-  return spanMs <= HOURLY_MAX_SPAN_MS ? 'hour' : 'day'
+  return Math.floor(spanMs / HOUR_MS) <= HOURLY_MAX_HOURS ? 'hour' : 'day'
 }
 
 export type PrecipBucket = {
@@ -43,6 +46,25 @@ export function bucketEnd(start: Date, granularity: Granularity): Date {
   if (granularity === 'hour') end.setHours(end.getHours() + 1)
   else end.setDate(end.getDate() + 1)
   return end
+}
+
+// Widens a window out to whole buckets, so the first and last bars cover
+// full hours/days rather than whatever fraction of a day the window happens
+// to start or end in — a partial bucket would both under-report its total
+// and sit half outside the axis.
+export function snapToBuckets(window: [Date, Date], granularity: Granularity): [Date, Date] {
+  const lastStart = bucketStart(new Date(window[1].getTime() - 1), granularity)
+  return [bucketStart(window[0], granularity), bucketEnd(lastStart, granularity)]
+}
+
+// Every bucket start in a (snapped) window, dry or not — one band each on
+// the x-axis, so a day with no rain still takes up its day.
+export function bucketStartsIn(window: [Date, Date], granularity: Granularity): Date[] {
+  const starts: Date[] = []
+  for (let t = bucketStart(window[0], granularity); t < window[1]; t = bucketEnd(t, granularity)) {
+    starts.push(t)
+  }
+  return starts
 }
 
 export function bucketPrecip(readings: Reading[], granularity: Granularity): PrecipBucket[] {
