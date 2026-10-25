@@ -307,38 +307,51 @@ def fetch_aqhi():
 # each hour has to pass through the archive's ingest pipeline first. That's
 # far looser than citypage's ~5-minute publication delay, so unlike the
 # forecast/AQHI merge there's no "is this the same hour as the reading"
-# check here — we just take whatever the archive's most recent hour is and
-# publish it as its own reading, under its own timestamp.
+# check here — each archived hour is published as its own reading, under its
+# own timestamp.
+#
+# The archive doesn't release hours one at a time on a steady clock — it can
+# land several at once, and a poll can fail outright. Fetching only the
+# latest hour would silently drop every hour in between, so each poll
+# re-fetches the whole window instead. Re-publishing hours already stored is
+# harmless: the logger's (device_id, metric, recorded_at) unique index turns
+# them into no-op INSERT OR IGNOREs.
 CLIMATE_HOURLY_MAX_AGE_SECONDS = 48 * 3600
+CLIMATE_HOURLY_LIMIT = CLIMATE_HOURLY_MAX_AGE_SECONDS // 3600
 
 
 def fetch_climate_hourly():
-    """Returns {"ts", "precipitation_mm", "quality_flag"?} for the most
-    recent hour the archive has for CLIMATE_IDENTIFIER, or None if nothing
-    within CLIMATE_HOURLY_MAX_AGE_SECONDS is available (a stalled archive
-    feed otherwise means silently republishing the same old value forever)."""
+    """Returns a chronological list of {"ts", "precipitation_mm",
+    "quality_flag"?} for every hour the archive has for CLIMATE_IDENTIFIER
+    within CLIMATE_HOURLY_MAX_AGE_SECONDS — empty if there are none (a
+    stalled archive feed otherwise means silently republishing the same old
+    values forever). Hours with no amount are skipped individually rather
+    than discarding the rest of the window."""
     url = (f"{GEOMET}/collections/climate-hourly/items"
-           f"?CLIMATE_IDENTIFIER={CLIMATE_IDENTIFIER}&sortby=-UTC_DATE&limit=1&f=json")
+           f"?CLIMATE_IDENTIFIER={CLIMATE_IDENTIFIER}&sortby=-UTC_DATE"
+           f"&limit={CLIMATE_HOURLY_LIMIT}&f=json")
     data = json.loads(http_get(url))
     features = data.get("features") or []
-    if not features:
-        return None
-
-    props = features[0].get("properties", {})
-    recorded_at = _normalize_iso(props.get("UTC_DATE"))
-    amount_mm = props.get("PRECIP_AMOUNT")
-    if not recorded_at or not isinstance(amount_mm, (int, float)) or isinstance(amount_mm, bool):
-        return None
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if _seconds_between(recorded_at, now) > CLIMATE_HOURLY_MAX_AGE_SECONDS:
-        return None
+    results = []
+    for feature in features:
+        props = feature.get("properties", {})
+        recorded_at = _normalize_iso(props.get("UTC_DATE"))
+        amount_mm = props.get("PRECIP_AMOUNT")
+        if not recorded_at or not isinstance(amount_mm, (int, float)) or isinstance(amount_mm, bool):
+            continue
+        if _seconds_between(recorded_at, now) > CLIMATE_HOURLY_MAX_AGE_SECONDS:
+            continue
 
-    result = {"ts": recorded_at, "precipitation_mm": float(amount_mm)}
-    flag = props.get("PRECIP_AMOUNT_FLAG")
-    if isinstance(flag, str) and flag:
-        result["quality_flag"] = flag
-    return result
+        result = {"ts": recorded_at, "precipitation_mm": float(amount_mm)}
+        flag = props.get("PRECIP_AMOUNT_FLAG")
+        if isinstance(flag, str) and flag:
+            result["quality_flag"] = flag
+        results.append(result)
+
+    results.sort(key=lambda r: r["ts"])
+    return results
 
 
 # ---------------- MQTT publishing ----------------
@@ -384,13 +397,15 @@ class ECPublisher:
         # Published as its own reading, under its own (much older) timestamp,
         # rather than merged into citypage's reading above — see
         # fetch_climate_hourly's docstring for why the two can't share a ts.
-        climate = _best_effort("climate-hourly", fetch_climate_hourly)
-        if climate:
-            precip_reading = {"ts": climate["ts"], "precipitation_mm": climate["precipitation_mm"]}
-            if "quality_flag" in climate:
-                precip_reading["precipitation_mm_flag"] = climate["quality_flag"]
-            self.client.publish(TOPIC_READING, json.dumps(precip_reading), qos=1, retain=False)
-            print(f"  {TOPIC_READING}  {json.dumps(precip_reading)}")
+        climate_hours = _best_effort("climate-hourly", fetch_climate_hourly)
+        if climate_hours:
+            for climate in climate_hours:
+                precip_reading = {"ts": climate["ts"], "precipitation_mm": climate["precipitation_mm"]}
+                if "quality_flag" in climate:
+                    precip_reading["precipitation_mm_flag"] = climate["quality_flag"]
+                self.client.publish(TOPIC_READING, json.dumps(precip_reading), qos=1, retain=False)
+            print(f"  {TOPIC_READING}  {len(climate_hours)} climate-hourly precipitation hour(s), "
+                  f"{climate_hours[0]['ts']} .. {climate_hours[-1]['ts']}")
         else:
             print("  [skip] no climate-hourly precipitation this poll")
 

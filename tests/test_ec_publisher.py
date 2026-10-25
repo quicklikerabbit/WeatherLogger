@@ -54,18 +54,22 @@ def _recent_utc_date(hours_ago=1):
     return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _climate_hourly_json(precip=0.4, flag=None, utc_date=None):
+def _climate_hour(precip=0.4, flag=None, utc_date=None):
     if utc_date is None:
         utc_date = _recent_utc_date()
-    return json.dumps({
-        "features": [{
-            "properties": {
-                "PRECIP_AMOUNT": precip,
-                "PRECIP_AMOUNT_FLAG": flag,
-                "UTC_DATE": utc_date,
-            },
-        }],
-    }).encode()
+    return {
+        "properties": {
+            "PRECIP_AMOUNT": precip,
+            "PRECIP_AMOUNT_FLAG": flag,
+            "UTC_DATE": utc_date,
+        },
+    }
+
+
+def _climate_hourly_json(precip=0.4, flag=None, utc_date=None, features=None):
+    if features is None:
+        features = [_climate_hour(precip, flag, utc_date)]
+    return json.dumps({"features": features}).encode()
 
 
 class NormalizeIsoTests(unittest.TestCase):
@@ -132,38 +136,70 @@ class FetchClimateHourlyTests(unittest.TestCase):
         ts = _recent_utc_date(hours_ago=2)
         http_get.return_value = _climate_hourly_json(precip=0.4, utc_date=ts)
         result = fetch_climate_hourly()
-        self.assertEqual(result, {"ts": ts + "Z", "precipitation_mm": 0.4})
+        self.assertEqual(result, [{"ts": ts + "Z", "precipitation_mm": 0.4}])
+
+    @patch("ec_publisher.http_get")
+    def test_returns_every_hour_in_the_window_chronologically(self, http_get):
+        # The archive can release several hours at once; every one of them
+        # must come back, not just the newest, or the gap is lost for good.
+        # The API sorts newest-first — the result should be oldest-first.
+        hours = [_recent_utc_date(hours_ago=h) for h in (3, 4, 5)]
+        http_get.return_value = _climate_hourly_json(
+            features=[_climate_hour(precip=float(i), utc_date=ts) for i, ts in enumerate(hours)],
+        )
+        result = fetch_climate_hourly()
+        self.assertEqual([r["ts"] for r in result], [ts + "Z" for ts in reversed(hours)])
+        self.assertEqual([r["precipitation_mm"] for r in result], [2.0, 1.0, 0.0])
+
+    @patch("ec_publisher.http_get")
+    def test_requests_the_whole_max_age_window(self, http_get):
+        http_get.return_value = _climate_hourly_json(features=[])
+        fetch_climate_hourly()
+        self.assertIn("limit=48", http_get.call_args.args[0])
 
     @patch("ec_publisher.http_get")
     def test_includes_quality_flag_when_present(self, http_get):
         http_get.return_value = _climate_hourly_json(precip=0.0, flag="T")
         result = fetch_climate_hourly()
-        self.assertEqual(result["quality_flag"], "T")
+        self.assertEqual(result[0]["quality_flag"], "T")
 
     @patch("ec_publisher.http_get")
     def test_no_flag_key_when_flag_is_null(self, http_get):
         http_get.return_value = _climate_hourly_json(flag=None)
         result = fetch_climate_hourly()
-        self.assertNotIn("quality_flag", result)
+        self.assertNotIn("quality_flag", result[0])
 
     @patch("ec_publisher.http_get")
-    def test_none_when_no_features(self, http_get):
+    def test_empty_when_no_features(self, http_get):
         http_get.return_value = json.dumps({"features": []}).encode()
-        self.assertIsNone(fetch_climate_hourly())
+        self.assertEqual(fetch_climate_hourly(), [])
 
     @patch("ec_publisher.http_get")
-    def test_none_when_amount_missing(self, http_get):
-        http_get.return_value = json.dumps({
-            "features": [{"properties": {"PRECIP_AMOUNT": None, "UTC_DATE": _recent_utc_date()}}],
-        }).encode()
-        self.assertIsNone(fetch_climate_hourly())
+    def test_skips_an_hour_with_no_amount_but_keeps_the_rest(self, http_get):
+        good_ts = _recent_utc_date(hours_ago=2)
+        http_get.return_value = _climate_hourly_json(features=[
+            _climate_hour(precip=None, utc_date=_recent_utc_date(hours_ago=1)),
+            _climate_hour(precip=0.6, utc_date=good_ts),
+        ])
+        result = fetch_climate_hourly()
+        self.assertEqual(result, [{"ts": good_ts + "Z", "precipitation_mm": 0.6}])
 
     @patch("ec_publisher.http_get")
-    def test_none_when_the_latest_hour_is_too_old(self, http_get):
+    def test_empty_when_every_hour_is_too_old(self, http_get):
         # The archive stopped advancing — this shouldn't republish a
         # years-stale value as if it were current.
         http_get.return_value = _climate_hourly_json(utc_date="2000-01-01T00:00:00")
-        self.assertIsNone(fetch_climate_hourly())
+        self.assertEqual(fetch_climate_hourly(), [])
+
+    @patch("ec_publisher.http_get")
+    def test_drops_only_the_hours_past_the_max_age(self, http_get):
+        fresh_ts = _recent_utc_date(hours_ago=10)
+        http_get.return_value = _climate_hourly_json(features=[
+            _climate_hour(utc_date=fresh_ts),
+            _climate_hour(utc_date=_recent_utc_date(hours_ago=60)),
+        ])
+        result = fetch_climate_hourly()
+        self.assertEqual([r["ts"] for r in result], [fresh_ts + "Z"])
 
 
 class SecondsBetweenTests(unittest.TestCase):
@@ -205,30 +241,31 @@ class PollOnceTests(unittest.TestCase):
         self.assertIn(TOPIC_FORECAST, topics)
 
     @patch("ec_publisher.fetch_aqhi", return_value=(None, None))
-    @patch("ec_publisher.fetch_climate_hourly",
-           return_value={"ts": "2024-01-15T06:00:00Z", "precipitation_mm": 2.4, "quality_flag": "T"})
+    @patch("ec_publisher.fetch_climate_hourly", return_value=[
+        {"ts": "2024-01-15T05:00:00Z", "precipitation_mm": 1.0},
+        {"ts": "2024-01-15T06:00:00Z", "precipitation_mm": 2.4, "quality_flag": "T"},
+    ])
     @patch("ec_publisher.fetch_citypage_xml", return_value=CITYPAGE_XML)
-    def test_climate_hourly_precipitation_is_published_as_its_own_reading(self, *_mocks):
+    def test_each_climate_hourly_hour_is_published_as_its_own_reading(self, *_mocks):
         pub = self._publisher()
         pub.poll_once()
         readings = self._published_all(pub, TOPIC_READING)
-        self.assertEqual(len(readings), 2)
+        self.assertEqual(len(readings), 3)
 
         citypage_reading = next(r for r in readings if "temperature" in r)
-        precip_reading = next(r for r in readings if "precipitation_mm" in r)
+        precip_readings = [r for r in readings if "precipitation_mm" in r]
 
-        # citypage's reading isn't touched by the precipitation reading —
+        # citypage's reading isn't touched by the precipitation readings —
         # each keeps its own source's timestamp rather than one overwriting
         # the other.
         self.assertEqual(citypage_reading["ts"], "2024-01-15T12:00:00Z")
-        self.assertEqual(precip_reading, {
-            "ts": "2024-01-15T06:00:00Z",
-            "precipitation_mm": 2.4,
-            "precipitation_mm_flag": "T",
-        })
+        self.assertEqual(precip_readings, [
+            {"ts": "2024-01-15T05:00:00Z", "precipitation_mm": 1.0},
+            {"ts": "2024-01-15T06:00:00Z", "precipitation_mm": 2.4, "precipitation_mm_flag": "T"},
+        ])
 
     @patch("ec_publisher.fetch_aqhi", return_value=(None, None))
-    @patch("ec_publisher.fetch_climate_hourly", return_value=None)
+    @patch("ec_publisher.fetch_climate_hourly", return_value=[])
     @patch("ec_publisher.fetch_citypage_xml", return_value=CITYPAGE_XML)
     def test_no_extra_reading_when_climate_hourly_has_nothing_recent_enough(self, *_mocks):
         pub = self._publisher()
