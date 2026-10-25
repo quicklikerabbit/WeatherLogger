@@ -50,11 +50,16 @@ export function LineChart({
   width,
   height,
   metric,
+  xDomain,
 }: {
   readings: Reading[]
   width: number
   height: number
   metric?: string
+  // The selected time window. When given, the axis spans the whole window
+  // instead of shrinking to the data's extent, so a gap at either end
+  // (e.g. precipitation's archive lag) shows as a gap.
+  xDomain?: [Date, Date]
 }) {
   // Hooks must run unconditionally, ahead of the early returns below.
   const svgRef = useRef<SVGSVGElement>(null)
@@ -76,7 +81,7 @@ export function LineChart({
   }
 
   const xScale = scaleTime({
-    domain: computeXDomain(parsed.map((d) => d.date)),
+    domain: xDomain ?? computeXDomain(parsed.map((d) => d.date)),
     range: [0, innerWidth],
   })
 
