@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run dashboard",
+      "detail": "API server (tsx watch) + Vite client, via npm start in dashboard/",
+      "type": "npm",
+      "script": "start",
+      "path": "dashboard",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}
