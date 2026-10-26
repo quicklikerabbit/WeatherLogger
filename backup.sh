@@ -15,6 +15,10 @@ KEEP_COUNT=2
 
 mkdir -p "$LOCAL_DIR"
 
+# Timestamp each run in the log, so any ssh/scp error output that follows
+# can be tied to when it happened.
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Starting backup"
+
 # Clean up the remote snapshot on any exit path, not just the happy one —
 # without this, a failed scp leaves REMOTE_TMP behind on the Pi forever
 # since `set -e` skips the rest of the script.

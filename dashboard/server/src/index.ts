@@ -19,5 +19,6 @@ if (fs.existsSync(clientDist)) {
 }
 
 app.listen(PORT, () => {
-  console.log(`weather-dashboard server listening on http://localhost:${PORT}`);
+  const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  console.log(`[${stamp}] weather-dashboard server listening on http://localhost:${PORT}`);
 });
