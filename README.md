@@ -196,6 +196,31 @@ EC side). If you edit either `.service` file, re-copy it to
 `/etc/systemd/system/` and run `sudo systemctl daemon-reload` before the
 change takes effect.
 
+## Dashboard host (Mac)
+
+The dashboard and its backups live on a Mac on the same network as the Pi,
+not on the Pi itself. `launchd/` holds two launchd agents for that Mac:
+
+- `com.weatherlogger.backup` runs `backup.sh` at the top of every hour
+  (once on wake, if the Mac was asleep). Needs passwordless SSH to
+  `pi-logger`.
+- `com.weatherlogger.dashboard` serves the built dashboard (API and client)
+  on port 4000 to the whole network: `http://<mac-name>.local:4000`. It
+  starts at login and restarts if it exits.
+
+The plists are templates. `launchd/install.sh` fills in this repo's path,
+the current `node`, and the log directory, then installs and starts both
+agents. One-time setup (re-run `install.sh` after switching node versions):
+
+```bash
+(cd dashboard/client && npm run build) && (cd dashboard/server && npm run build)
+./launchd/install.sh
+```
+
+After pulling dashboard changes, rebuild both, then restart the server with
+`launchctl kickstart -k gui/$(id -u)/com.weatherlogger.dashboard`. Logs are
+in `~/Library/Logs/WeatherLogger/`.
+
 ## Future work
 
 - Replace `fake_publisher.py` with real sensor hardware.

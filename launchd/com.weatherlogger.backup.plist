@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Runs backup.sh at the top of every hour. If the Mac was asleep at that
+     time, launchd runs it once on wake instead of skipping it. -->
+<!-- Template: install.sh fills in the __PLACEHOLDERS__ for this machine. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.weatherlogger.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO_DIR__/backup.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/backup.log</string>
+</dict>
+</plist>
