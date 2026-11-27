@@ -17,6 +17,7 @@ from ecowitt_publisher import (
 
 GATEWAY = "gw3000b"
 WN31 = "wn31-ch1"
+WN31_CH2 = "wn31-ch2"
 
 # A real GW3000B upload, captured off the broker (PASSKEY redacted).
 UPLOAD = (
@@ -55,6 +56,20 @@ class ParseEcowittTests(unittest.TestCase):
         })
         # The gateway's own reading is unaffected by the WN31's fields.
         self.assertEqual(readings[GATEWAY], parse_ecowitt(UPLOAD, now=NOW)[GATEWAY])
+
+    def test_two_wn31s_are_split_by_channel(self):
+        upload = UPLOAD_WITH_WN31.replace(
+            b"&freq=", b"&temp2f=50.00&humidity2=75&batt2=1&freq="
+        )
+        readings = parse_ecowitt(upload, now=NOW)
+        self.assertEqual(readings[WN31_CH2], {
+            "ts": "2026-11-26T19:54:50Z",
+            "temperature": 10.0,  # 50.00°F
+            "humidity": 75.0,
+            "battery_low": 1.0,
+        })
+        # Channel 1's reading is unaffected by channel 2's fields.
+        self.assertEqual(readings[WN31], parse_ecowitt(UPLOAD_WITH_WN31, now=NOW)[WN31])
 
     def test_wn31_low_battery_flag_is_passed_through(self):
         readings = parse_ecowitt(UPLOAD_WITH_WN31.replace(b"batt1=0", b"batt1=1"), now=NOW)

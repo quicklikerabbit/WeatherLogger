@@ -24,7 +24,10 @@ export type ReadingSeries = {
 
 // Turns the API's per-device/metric series into chart series. Labels name
 // only what varies within the panel: the metric when there's one device,
-// the device when there's one metric, both when neither is unique.
+// the device when there's one metric. When both vary, the panel's primary
+// metric (its first, the one its title names) still gets just the device,
+// so the legend reads like a single-metric panel's; only secondary metrics
+// are spelled out, as "Metric · device".
 export function toChartSeries(
   panel: PanelConfig,
   data: ReadingSeries[],
@@ -33,6 +36,7 @@ export function toChartSeries(
   const devices = new Set(data.map((s) => s.device_id));
   const metrics = new Set(data.map((s) => s.metric));
   const metricOrder = (m: string) => panel.metrics.indexOf(m);
+  const primaryMetric = panel.metrics[0];
 
   return [...data]
     .sort(
@@ -42,11 +46,11 @@ export function toChartSeries(
     .map((s) => {
       const metricName = prettifyMetric(s.metric);
       const label =
-        devices.size > 1 && metrics.size > 1
-          ? `${metricName} · ${s.device_id}`
-          : devices.size > 1
-            ? s.device_id
-            : metricName;
+        devices.size === 1
+          ? metricName
+          : metrics.size > 1 && s.metric !== primaryMetric
+            ? `${metricName} · ${s.device_id}`
+            : s.device_id;
       return {
         key: `${s.device_id}::${s.metric}`,
         label,

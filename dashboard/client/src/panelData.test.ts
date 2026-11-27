@@ -32,14 +32,23 @@ describe("toChartSeries", () => {
     expect(result.map((s) => s.label)).toEqual(["dev-a", "dev-b"]);
   });
 
-  it("labels by both when devices and metrics both vary, colored by device", () => {
+  it("names only secondary metrics when devices and metrics both vary, colored by device", () => {
     const result = toChartSeries(
       temperaturePanel,
       [series("dev-a", "temperature"), series("dev-b", "dewpoint")],
       colorFor,
     );
-    expect(result.map((s) => s.label)).toEqual(["Temperature · dev-a", "Dewpoint · dev-b"]);
+    expect(result.map((s) => s.label)).toEqual(["dev-a", "Dewpoint · dev-b"]);
     expect(result.map((s) => s.color)).toEqual(["var(--series-1)", "var(--series-2)"]);
+  });
+
+  it("keeps primary-metric labels device-only when one device adds a secondary metric", () => {
+    const result = toChartSeries(
+      temperaturePanel,
+      [series("dev-a", "temperature"), series("dev-a", "dewpoint"), series("dev-b", "temperature")],
+      colorFor,
+    );
+    expect(result.map((s) => s.label)).toEqual(["dev-a", "Dewpoint · dev-a", "dev-b"]);
   });
 });
 

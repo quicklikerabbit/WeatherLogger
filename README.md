@@ -29,8 +29,9 @@ over MQTT; a logger process subscribes and writes them into SQLite.
   with it. The bridge splits that into one JSON reading per physical
   sensor, in metric units, and republishes each under its own device ID:
   `gw3000b` (the gateway's built-in indoor temperature, humidity and
-  pressure) and `wn31-ch1` (a WN31 temperature/humidity sensor on
-  channel 1, plus its `battery_low` flag: 0 = OK, 1 = low). Pairing another sensor means adding it to `DEVICES` there.
+  pressure), and `wn31-ch1` and `wn31-ch2` (WN31 temperature/humidity
+  sensors on channels 1 and 2, each with a `battery_low` flag: 0 = OK,
+  1 = low). Pairing another sensor means adding it to `DEVICES` there.
 - **`schema.sql`** — SQLite schema (`readings`, `forecast_periods`, `aqhi`,
   `deployments` tables).
 - **`timeutils.py`** — the shared `utc_now_iso()` timestamp helper every

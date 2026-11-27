@@ -2,8 +2,9 @@
 """
 Ecowitt bridge — subscribes to the GW3000B gateway's own MQTT uploads and
 republishes them on the project's topic scheme, one device per physical
-sensor: `gw3000b` (the gateway's built-in indoor sensors) and `wn31-ch1`
-(a WN31 temperature/humidity sensor paired on channel 1).
+sensor: `gw3000b` (the gateway's built-in indoor sensors), and `wn31-ch1`
+and `wn31-ch2` (WN31 temperature/humidity sensors paired on channels 1
+and 2).
 
 The gateway (Weather Services -> Customized -> MQTT) publishes to
 ecowitt/<MAC> on this same broker, but in Ecowitt's upload format rather
@@ -116,6 +117,11 @@ DEVICES = {
         "temp1f": ("temperature", _f_to_c),
         "humidity1": ("humidity", _as_is),
         "batt1": ("battery_low", _as_is),
+    },
+    "wn31-ch2": {
+        "temp2f": ("temperature", _f_to_c),
+        "humidity2": ("humidity", _as_is),
+        "batt2": ("battery_low", _as_is),
     },
 }
 
