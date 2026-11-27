@@ -21,6 +21,16 @@ over MQTT; a logger process subscribes and writes them into SQLite.
   data (as opposed to the fake publisher's simulated values) that also
   builds baseline history for the city before real hardware exists to
   compare it against.
+- **`ecowitt_publisher.py`** — bridges the Ecowitt GW3000B gateway onto
+  the topic scheme. The gateway publishes its own uploads to
+  `ecowitt/<MAC>` on the Pi's broker (configured in its web UI under
+  Weather Services → Customized → MQTT), but in Ecowitt's format: a
+  URL-encoded form string in imperial units, covering every sensor paired
+  with it. The bridge splits that into one JSON reading per physical
+  sensor, in metric units, and republishes each under its own device ID:
+  `gw3000b` (the gateway's built-in indoor temperature, humidity and
+  pressure) and `wn31-ch1` (a WN31 temperature/humidity sensor on
+  channel 1, plus its `battery_low` flag: 0 = OK, 1 = low). Pairing another sensor means adding it to `DEVICES` there.
 - **`schema.sql`** — SQLite schema (`readings`, `forecast_periods`, `aqhi`,
   `deployments` tables).
 - **`timeutils.py`** — the shared `utc_now_iso()` timestamp helper every
@@ -121,15 +131,29 @@ BROKER_HOST=<pi-ip> python ec_publisher.py
 
 It polls once immediately on startup, then hourly on the clock (with a
 5-minute delay past the hour, since MSC's bulletins land a minute or two
-after). `fake_publisher.py` and `ec_publisher.py` can run at the same
-time — they're different device IDs and don't conflict.
+after). To bridge the GW3000B gateway (it must already be publishing to this
+broker — see `ecowitt_publisher.py`'s docstring):
+
+```bash
+BROKER_HOST=<pi-ip> python ecowitt_publisher.py
+```
+
+Each bridged device is marked `offline` once three uploads' worth of time
+passes without a reading from it, not just when the bridge itself stops —
+the gateway can drop off Wi-Fi while the bridge stays connected, and a
+single sensor (e.g. a WN31 with a dead battery) can drop out while the
+gateway keeps uploading.
+
+`fake_publisher.py`, `ec_publisher.py` and `ecowitt_publisher.py` can run
+at the same time — they're different device IDs and don't conflict.
 
 ## Tests
 
 `tests/` covers the message-handling and parsing logic that's easy to get
 subtly wrong: `logger.py`'s payload validation and dedup behaviour per
 message kind, `ec_publisher.py`'s citypage XML parsing and AQHI timestamp
-normalization, and `timeutils.py`. It's stdlib `unittest`, no extra
+normalization, `ecowitt_publisher.py`'s upload translation and offline
+detection, and `timeutils.py`. It's stdlib `unittest`, no extra
 dependency beyond what Setup already installs. Run everything from the
 project root:
 
@@ -163,21 +187,21 @@ To push the project to the Pi, run `sync.sh`. It rsyncs the working tree
 ./sync.sh
 ```
 
-Restart `logger.py` and `ec_publisher.py` on the Pi afterwards to pick up
+Restart `logger.py` and the publishers on the Pi afterwards to pick up
 the change — the persistent MQTT session means `logger.py` won't miss
-anything published while it was down. If both run as systemd services
+anything published while it was down. If they run as systemd services
 (see below), restart with:
 
 ```bash
-ssh pi-logger 'sudo systemctl restart weather-logger weather-ec-publisher'
+ssh pi-logger 'sudo systemctl restart weather-logger weather-ec-publisher weather-ecowitt-bridge'
 ```
 
 ### Running on boot
 
-`systemd/` holds unit files that start `logger.py` and `ec_publisher.py`
+`systemd/` holds unit files that start `logger.py`, `ec_publisher.py` and `ecowitt_publisher.py`
 automatically when the Pi boots, and restart them automatically if they
 crash or the Pi loses power and comes back — no manual intervention
-needed. `weather-ec-publisher.service` orders itself after
+needed. `weather-ec-publisher.service` and `weather-ecowitt-bridge.service` order themselves after
 `weather-logger.service` so the logger comes up first, though MQTT's
 persistent sessions mean strict ordering isn't required for correctness.
 
@@ -185,13 +209,13 @@ One-time setup on the Pi, after the first `sync.sh`:
 
 ```bash
 ssh pi-logger
-sudo cp ~/weather/systemd/weather-logger.service ~/weather/systemd/weather-ec-publisher.service /etc/systemd/system/
+sudo cp ~/weather/systemd/weather-logger.service ~/weather/systemd/weather-ec-publisher.service ~/weather/systemd/weather-ecowitt-bridge.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now weather-logger weather-ec-publisher
+sudo systemctl enable --now weather-logger weather-ec-publisher weather-ecowitt-bridge
 ```
 
 Check status/logs with `systemctl status weather-logger` or
-`journalctl -u weather-logger -f` (swap in `weather-ec-publisher` for the
+`journalctl -u weather-logger -f` (swap in `weather-ec-publisher` or `weather-ecowitt-bridge` for the
 EC side). If you edit either `.service` file, re-copy it to
 `/etc/systemd/system/` and run `sudo systemctl daemon-reload` before the
 change takes effect.

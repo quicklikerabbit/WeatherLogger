@@ -265,36 +265,41 @@ def _fetch_latest_aqhi(kind):
     return None
 
 
+def parse_aqhi_observation(data):
+    """One AQHI observation JSON document -> {"valid_at", "value"}, or None
+    if it has no usable value or timestamp. Shared with backfill_ec.py so
+    the live poll and a backfill can't disagree about what's valid."""
+    props = data.get("properties", {})
+    valid_at = _normalize_iso(props.get("observation_datetime"))
+    if props.get("aqhi") is None or not valid_at:
+        return None
+    return {"valid_at": valid_at, "value": props["aqhi"]}
+
+
+def parse_aqhi_forecast(data):
+    """One AQHI forecast JSON document -> {"issued_at", "periods"}, or None."""
+    for feature in data.get("features", []):
+        props = feature.get("properties", {})
+        if props.get("aqhi_type") != "AQHI-Forecast-Period":
+            continue
+        issued_at = _normalize_iso(props.get("publication_datetime"))
+        periods = [
+            {"name": period.get("forecast_period_en"), "value": period.get("aqhi")}
+            for period in props.get("forecast_period", {}).values()
+            if period.get("forecast_period_en") and period.get("aqhi") is not None
+        ]
+        if issued_at and periods:
+            return {"issued_at": issued_at, "periods": periods}
+        return None
+    return None
+
+
 def fetch_aqhi():
     """Returns (observation, forecast), either of which may be None."""
-    observation = None
     obs_data = _fetch_latest_aqhi("observation")
-    if obs_data:
-        props = obs_data.get("properties", {})
-        valid_at = _normalize_iso(props.get("observation_datetime"))
-        if props.get("aqhi") is not None and valid_at:
-            observation = {
-                "valid_at": valid_at,
-                "value": props["aqhi"],
-            }
-
-    forecast = None
     fcst_data = _fetch_latest_aqhi("forecast")
-    if fcst_data:
-        for feature in fcst_data.get("features", []):
-            props = feature.get("properties", {})
-            if props.get("aqhi_type") != "AQHI-Forecast-Period":
-                continue
-            issued_at = _normalize_iso(props.get("publication_datetime"))
-            periods = [
-                {"name": period.get("forecast_period_en"), "value": period.get("aqhi")}
-                for period in props.get("forecast_period", {}).values()
-                if period.get("forecast_period_en") and period.get("aqhi") is not None
-            ]
-            if issued_at and periods:
-                forecast = {"issued_at": issued_at, "periods": periods}
-            break
-
+    observation = parse_aqhi_observation(obs_data) if obs_data else None
+    forecast = parse_aqhi_forecast(fcst_data) if fcst_data else None
     return observation, forecast
 
 
